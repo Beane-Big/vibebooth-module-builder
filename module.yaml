@@ -1,0 +1,17 @@
+# 模块清单：平台靠它认识这个模块，规则见 https://github.com/Beane-Big/vibebooth/blob/main/docs/module-spec.md
+platform: 1              # 遵循的模块规范版本
+id: builder              # 全局唯一，也是网址前缀 /apps/builder/ 和 /api/builder/
+name: "构建器"
+description: "上传模块源码包，在服务器上构建出软件包，可以一键安装或下载"
+icon: icon.svg
+version: 0.1.0           # 发布新版本前改大
+services:                # 哪个容器接哪个网址前缀，安装器据此生成网关路由
+  frontend: {port: 80}   # 容器 builder-frontend → /apps/builder/
+  backend: {port: 8000}  # 容器 builder-backend → /api/builder/，健康检查 /api/builder/health
+# 要在服务器上构建镜像。平台安装时会请管理员确认，然后让后端通过构建代理使用 Docker，只能操作 vb- 开头的模块镜像。
+privileges: [docker-build]
+menus:                   # 模块的页面；管理员在门户“用户”页按人勾选，default 是默认拥有它的角色
+  # 构建会在服务器上运行源码包里 Dockerfile 的命令，默认只给管理员。
+  - {id: home, name: "构建器", path: /apps/builder/, default: [admin]}
+  # settings: true 表示同时出现在门户的“设置”页；后端用这个菜单判断谁能改保留规则和镜像源。
+  - {id: settings, name: "设置", path: /apps/builder/settings/, default: [admin], settings: true}

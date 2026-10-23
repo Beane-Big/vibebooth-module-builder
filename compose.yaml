@@ -1,0 +1,19 @@
+# 模块的容器。npm run pack 按 build 构建镜像，打包时去掉 build、把 ${VERSION} 换成 module.yaml 里的版本号。
+# 网络、网关路由标签和 JWKS_URL 由安装器补上，这里不写；允许的字段见模块规范。
+services:
+  builder-backend:
+    image: vb-builder-backend:${VERSION}
+    build: ./backend
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - data:/data
+
+  builder-frontend:
+    image: vb-builder-frontend:${VERSION}
+    build: ./frontend
+    depends_on:
+      - builder-backend
+
+volumes:
+  data:

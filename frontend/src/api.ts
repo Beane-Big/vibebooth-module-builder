@@ -1,0 +1,97 @@
+export type Me = { name: string; menus: string[]; admin: boolean };
+
+export type BuildStatus = "queued" | "building" | "success" | "failed";
+
+export type Build = {
+  id: number;
+  moduleId: string;
+  moduleName: string;
+  version: string;
+  status: BuildStatus;
+  error: string;
+  packageSize: number;
+  createdBy: string;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+};
+
+export type BuildDetail = { build: Build; log: string; logTruncated: boolean };
+
+export type Settings = {
+  maxPackages: number;
+  maxDays: number;
+  cacheGB: number;
+  npmRegistry: string;
+  goProxy: string;
+};
+
+export const statusText: Record<BuildStatus, string> = {
+  queued: "排队中",
+  building: "构建中",
+  success: "成功",
+  failed: "失败",
+};
+
+export const isRunning = (b: Build) => b.status === "queued" || b.status === "building";
+
+// 平台安装器认识的特权和给管理员看的说明，和门户“应用管理”页一致。
+export const privilegeInfo: Record<string, string> = {
+  "docker-build": "在服务器上构建镜像。它碰不到平台自己的程序，但能替换其他应用的镜像，只安装你信任的模块。",
+};
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+    public log = "",
+    public privileges: string[] = [],
+  ) {
+    super(message);
+  }
+}
+
+// 调用本模块后端的对内接口和平台安装器；登录 Cookie 由浏览器自动带上，网关负责校验。
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // 上传文件时由浏览器自己设置 multipart 的 Content-Type。
+  const json = !(init?.body instanceof FormData);
+  const res = await fetch(path, {
+    ...init,
+    headers: { ...(json && { "Content-Type": "application/json" }), ...init?.headers },
+  });
+  if (res.status === 401) {
+    location.href = "/login?next=" + encodeURIComponent(location.pathname);
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body.error ?? "请求失败", body.log, body.privileges);
+  }
+  return res.status === 204 ? (undefined as T) : res.json();
+}
+
+export const packageUrl = (id: number) => `/api/builder/builds/${id}/package`;
+
+export const api = {
+  me: () => request<Me>("/api/builder/me"),
+  builds: () => request<Build[]>("/api/builder/builds"),
+  build: (id: number) => request<BuildDetail>(`/api/builder/builds/${id}`),
+  upload: (file: File) => {
+    const form = new FormData();
+    form.append("source", file);
+    return request<Build>("/api/builder/builds", { method: "POST", body: form });
+  },
+  removeBuild: (id: number) => request<void>(`/api/builder/builds/${id}`, { method: "DELETE" }),
+  settings: () => request<Settings>("/api/builder/settings"),
+  saveSettings: (s: Settings) => request<Settings>("/api/builder/settings", { method: "PUT", body: JSON.stringify(s) }),
+
+  // 一键安装：在浏览器里取回软件包，再用管理员的登录上传给平台安装器，和在门户“应用管理”页上传一样。
+  // 模块声明了特权时安装器返回 409 和需要的特权，确认后带上 allowPrivileges 再装一次。
+  install: async (b: Build, allowPrivileges = false) => {
+    const res = await fetch(packageUrl(b.id));
+    if (!res.ok) throw new ApiError(res.status, "取回软件包失败");
+    const form = new FormData();
+    form.append("package", new File([await res.blob()], `${b.moduleId}-${b.version}.zip`));
+    if (allowPrivileges) form.append("allowPrivileges", "true");
+    return request<{ log: string }>("/api/platform/installer/modules", { method: "POST", body: form });
+  },
+};
