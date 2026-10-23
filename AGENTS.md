@@ -8,6 +8,7 @@
 - 后端必须保留 `GET /api/builder/health`，正常时返回 2xx。
 - 数据只存在 `compose.yaml` 里声明的卷里，默认用 SQLite。改表结构要兼容老数据。
 - 要调用其他模块，只调用对方 `/api/<id>/ext/v1/` 下的对外接口，并在 `module.yaml` 的 `requires` 里写上对方。
-- 发布新版本前把 `module.yaml` 的 `version` 改大，再运行 `npm run pack`。
+- 发布新版本前把 `module.yaml` 的 `version` 改大，再运行 `npm run pack`，或者 `npm run pack:source` 后上传到平台的构建器。
 - 后端通过环境变量 `DOCKER_HOST`（安装器设置，指向平台的构建代理）调用 Docker 接口，只用构建代理放行的那几个接口；代理拒绝的请求会返回 403，原因写在构建代理的日志里。
-- 校验和打包用平台仓库的 `packages/manifest` 和 `packages/modpkg`，和安装器是同一套规则，不要在这里另写一份。平台改了这两个包并打了新标签后，更新 `backend/go.mod` 再运行 `npm run vendor`。
+- 校验和打包用平台仓库的 `packages/manifest` 和 `packages/modpkg`，和安装器是同一套规则，不要在这里另写一份。平台改了这两个包并打了新标签后，改 `backend/go.mod` 里的版本即可，构建镜像时会下载。
+- 后端加了 Go 依赖不用在本机运行 `go mod tidy`，构建镜像时会补齐；Dockerfile 里的 `ARG GOPROXY`、`ARG NPM_REGISTRY` 和缓存挂载不要删，服务器构建靠它们换镜像源、复用下载过的依赖。
