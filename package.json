@@ -1,0 +1,12 @@
+{
+  "name": "vibebooth-module-builder",
+  "private": true,
+  "version": "0.0.0",
+  "description": "上传模块源码包，在服务器上构建出软件包，可以一键安装或下载",
+  "scripts": {
+    "pack": "node scripts/vb.mjs pack",
+    "install:local": "node scripts/vb.mjs install",
+    "vendor": "node scripts/vb.mjs vendor",
+    "dev": "node scripts/vb.mjs dev"
+  }
+}
