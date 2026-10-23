@@ -1,0 +1,39 @@
+# 在 GitHub 上打出软件包并发布到 Releases，不用在自己电脑上装 Docker 或开代理。
+# 在仓库的 Actions 页面选“发布软件包”，点 Run workflow 手动触发；版本号取 module.yaml 里的 version，
+# 发布为 Release v<版本>，附件是 builder-<版本>.zip，下载后在门户“应用管理”页上传。
+name: 发布软件包
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 打包要用平台的安装器镜像检查模块包。直接用平台仓库的发布标签构建，
+      # 起名 home-platform-installer，scripts/vb.mjs 会优先用这个名字的镜像。
+      - uses: actions/checkout@v4
+        with:
+          repository: Beane-Big/vibebooth
+          ref: installer/v0.2.0
+          path: .platform
+      - name: 构建安装器镜像
+        run: docker build -f .platform/installer/Dockerfile -t home-platform-installer .platform
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 打包
+        run: npm run pack
+      - name: 发布到 Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version:[[:space:]]*\([^[:space:]#]*\).*/\1/p' module.yaml)
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "已经有 v$version 的 Release 了，先把 module.yaml 的 version 改大" && exit 1
+          fi
+          gh release create "v$version" dist/*.zip --target "$GITHUB_SHA" --title "v$version" --notes "下载 zip，在门户“应用管理”页上传安装。"
