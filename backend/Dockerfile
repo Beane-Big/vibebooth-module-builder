@@ -1,8 +1,12 @@
-# 构建上下文是 backend/。依赖已经由 npm run vendor 下载到 vendor/，构建时不联网。
+# 构建上下文是 backend/。依赖在构建时下载，本机打包和服务器上的构建器都一样；下载过的依赖留在 Docker 的构建缓存里。
 FROM golang:1.26-alpine AS build
+# 服务器上的构建器可以传入国内的 Go 代理，不传时用官方代理。
+ARG GOPROXY=https://proxy.golang.org,direct
 WORKDIR /src
 COPY . .
-RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o /out/app .
+# 先 go mod tidy 补齐 go.mod 和 go.sum：加了新依赖、本机又没有 Go 时也能构建。
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    go mod tidy && CGO_ENABLED=0 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/app .
 
 FROM alpine:3.22
 RUN adduser -D -u 10001 app

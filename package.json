@@ -5,8 +5,9 @@
   "description": "上传模块源码包，在服务器上构建出软件包，可以一键安装或下载",
   "scripts": {
     "pack": "node scripts/vb.mjs pack",
+    "pack:source": "node scripts/vb.mjs source",
     "install:local": "node scripts/vb.mjs install",
-    "vendor": "node scripts/vb.mjs vendor",
-    "dev": "node scripts/vb.mjs dev"
+    "dev": "node scripts/vb.mjs dev",
+    "rename": "node scripts/vb.mjs rename"
   }
 }
