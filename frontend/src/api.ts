@@ -9,12 +9,20 @@ export type Build = {
   version: string;
   status: BuildStatus;
   error: string;
+  hint: string;
   packageSize: number;
   createdBy: string;
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  // 在构建器里点“安装”的结果；空表示没在这里装过。
+  installStatus: "" | "success" | "failed";
+  installedBy: string;
+  installedAt: string | null;
 };
+
+// 保留规则：每个模块成功和失败的构建各留最近 maxPackages 个，超过 maxDays 天的删除。
+export type Rules = { maxPackages: number; maxDays: number };
 
 export type BuildDetail = { build: Build; log: string; logTruncated: boolean };
 
@@ -81,6 +89,10 @@ export const api = {
     return request<Build>("/api/builder/builds", { method: "POST", body: form });
   },
   removeBuild: (id: number) => request<void>(`/api/builder/builds/${id}`, { method: "DELETE" }),
+  installLog: (id: number) => request<{ log: string }>(`/api/builder/builds/${id}/install`),
+  saveInstall: (id: number, ok: boolean, log: string) =>
+    request<void>(`/api/builder/builds/${id}/install`, { method: "PUT", body: JSON.stringify({ ok, log }) }),
+  rules: () => request<Rules>("/api/builder/rules"),
   settings: () => request<Settings>("/api/builder/settings"),
   saveSettings: (s: Settings) => request<Settings>("/api/builder/settings", { method: "PUT", body: JSON.stringify(s) }),
 

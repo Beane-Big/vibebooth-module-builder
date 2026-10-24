@@ -246,3 +246,82 @@ func TestValidateSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestMirrorHint(t *testing.T) {
+	goLog := "#6 30.560 \tmodernc.org/sqlite@v1.60.1: Get \"https://proxy.golang.org/modernc.org/sqlite/@v/v1.60.1.zip\": dial tcp 142.250.99.141:443: i/o timeout\n"
+	npmLog := "#9 12.3 npm error network request to https://registry.npmjs.org/react failed, reason: connect ETIMEDOUT 104.16.0.35:443\n"
+	hubLog := "ERROR: failed to resolve source metadata for docker.io/library/golang:1.26-alpine: dial tcp 54.1.2.3:443: i/o timeout\n"
+	// 只提到地址、没有网络错误的行不算，比如正常下载的日志。
+	okLog := "#3 [internal] load metadata for docker.io/library/alpine:3.22\n#6 go: downloading via https://proxy.golang.org\n"
+
+	cases := []struct {
+		name     string
+		log      string
+		settings Settings
+		want     []string
+	}{
+		{"Go 代理没设置", goLog, Settings{}, []string{"goproxy.cn"}},
+		{"Go 代理设置了", goLog, Settings{GoProxy: "https://goproxy.cn,direct"}, []string{"ARG GOPROXY"}},
+		{"npm 镜像源没设置", npmLog, Settings{}, []string{"registry.npmmirror.com"}},
+		{"Docker Hub", hubLog, Settings{}, []string{"DEPLOY-SERVER.md"}},
+		{"几种一起", goLog + npmLog, Settings{}, []string{"goproxy.cn", "registry.npmmirror.com"}},
+		{"不是网络问题", okLog + "main.go:3: undefined: foo\n", Settings{}, nil},
+	}
+	for _, c := range cases {
+		got := mirrorHint(c.log, c.settings)
+		if len(c.want) == 0 && got != "" {
+			t.Errorf("%s：不该有提示，得到 %q", c.name, got)
+		}
+		if len(c.want) > 0 && got == "" {
+			t.Errorf("%s：应该有提示", c.name)
+		}
+		for _, w := range c.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("%s：提示 %q 里应该有 %q", c.name, got, w)
+			}
+		}
+		if strings.Contains(got, "DEPLOY-SERVER") && !strings.Contains(c.log, "docker.io") {
+			t.Errorf("%s：不该提示 Docker Hub", c.name)
+		}
+	}
+}
+
+// 老版本的数据库没有后来加的列，打开时要补上，原来的记录还能读。
+func TestMigrateOldDB(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range []string{"hint", "install_status", "installed_by", "installed_at"} {
+		if _, err := store.db.Exec(`ALTER TABLE builds DROP COLUMN ` + col); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.db.Exec(`INSERT INTO builds (module_id, module_name, version, status, created_by, created_at) VALUES ('a', 'a', '0.1.0', 'success', 't', ?)`, time.Now().UTC())
+	store.db.Close()
+
+	store, err = OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	b, err := store.Get(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.InstallStatus != "" || b.InstalledAt != nil {
+		t.Errorf("老记录不该有安装结果: %+v", b)
+	}
+	if err := store.SetInstall(ctx, 1, installSuccess, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ = store.Get(ctx, 1); b.InstallStatus != installSuccess || b.InstalledBy != "admin" || b.InstalledAt == nil {
+		t.Errorf("安装结果没记上: %+v", b)
+	}
+	// 再打开一次，列已经有了，不能报错。
+	store.db.Close()
+	if _, err := OpenStore(path); err != nil {
+		t.Fatal(err)
+	}
+}
