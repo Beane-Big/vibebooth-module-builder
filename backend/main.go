@@ -46,6 +46,10 @@ func main() {
 	api.HandleFunc("GET /api/builder/builds/{id}", h.detail)
 	api.HandleFunc("GET /api/builder/builds/{id}/package", h.download)
 	api.HandleFunc("DELETE /api/builder/builds/{id}", h.remove)
+	api.HandleFunc("GET /api/builder/builds/{id}/install", h.installLog)
+	api.HandleFunc("PUT /api/builder/builds/{id}/install", requireAdmin(h.saveInstall))
+	// 保留规则所有人都能看，构建记录页据此显示每条记录什么时候删除。
+	api.HandleFunc("GET /api/builder/rules", h.rules)
 	// 保留规则和镜像源属于设置，只有有“设置”菜单的人能改；门户只是对他们显示设置入口，权限以这里为准。
 	api.HandleFunc("GET /api/builder/settings", requireMenu("settings", h.settings))
 	api.HandleFunc("PUT /api/builder/settings", requireMenu("settings", h.saveSettings))
@@ -76,7 +80,7 @@ type handlers struct {
 func (h *handlers) me(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFrom(r.Context())
 	// 一键安装调用的是平台安装器的接口，只有管理员能用；前端据此决定显不显示安装按钮。
-	writeJSON(w, http.StatusOK, map[string]any{"name": user.Name, "menus": user.Menus, "admin": slices.Contains(user.Roles, "admin")})
+	writeJSON(w, http.StatusOK, map[string]any{"name": user.Name, "menus": user.Menus, "admin": isAdmin(r)})
 }
 
 func (h *handlers) list(w http.ResponseWriter, r *http.Request) {
@@ -219,6 +223,60 @@ func (h *handlers) remove(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// maxInstallLogSize 是安装日志最多保存的长度，安装器的日志一般只有几 KB。
+const maxInstallLogSize = 1 << 20
+
+// saveInstall 记下在构建器里安装的结果和日志。安装是浏览器直接交给平台安装器的，装完由前端报回来。
+func (h *handlers) saveInstall(w http.ResponseWriter, r *http.Request) {
+	rec, ok := h.find(w, r)
+	if !ok {
+		return
+	}
+	if rec.Status != statusSuccess {
+		writeError(w, http.StatusBadRequest, "这次构建没有软件包")
+		return
+	}
+	var body struct {
+		OK  bool   `json:"ok"`
+		Log string `json:"log"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxInstallLogSize+64<<10)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "格式错误")
+		return
+	}
+	if err := os.WriteFile(h.builder.installLogPath(rec.ID), []byte(body.Log), 0o644); err != nil {
+		internalError(w, err)
+		return
+	}
+	status := installFailed
+	if body.OK {
+		status = installSuccess
+	}
+	if err := h.store.SetInstall(r.Context(), rec.ID, status, auth.UserFrom(r.Context()).Name); err != nil {
+		internalError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *handlers) installLog(w http.ResponseWriter, r *http.Request) {
+	rec, ok := h.find(w, r)
+	if !ok {
+		return
+	}
+	log, _ := tail(h.builder.installLogPath(rec.ID), maxInstallLogSize)
+	writeJSON(w, http.StatusOK, map[string]string{"log": log})
+}
+
+func (h *handlers) rules(w http.ResponseWriter, r *http.Request) {
+	st, err := h.store.Settings(r.Context())
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"maxPackages": st.MaxPackages, "maxDays": st.MaxDays})
+}
+
 func (h *handlers) find(w http.ResponseWriter, r *http.Request) (*Build, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -296,6 +354,21 @@ func requireMenu(menu string, next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// requireAdmin 要求当前用户是管理员。在构建器里安装用的是平台安装器的接口，只有管理员能装，安装结果也只收管理员的。
+func requireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !isAdmin(r) {
+			writeError(w, http.StatusForbidden, "只有管理员能安装")
+			return
+		}
+		next(w, r)
+	}
+}
+
+func isAdmin(r *http.Request) bool {
+	return slices.Contains(auth.UserFrom(r.Context()).Roles, "admin")
 }
 
 func env(key, fallback string) string {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -26,12 +27,23 @@ type Build struct {
 	Version     string     `json:"version"`
 	Status      string     `json:"status"`
 	Error       string     `json:"error"`
+	Hint        string     `json:"hint"` // 失败时根据日志给出的处理建议，比如去设置镜像源；判断不出来为空
 	PackageSize int64      `json:"packageSize"`
 	CreatedBy   string     `json:"createdBy"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	StartedAt   *time.Time `json:"startedAt"`
 	FinishedAt  *time.Time `json:"finishedAt"`
+	// 在构建器里点“安装”的结果，由前端装完后报回来；在门户“应用管理”页上传安装的记不到。
+	InstallStatus string     `json:"installStatus"` // 空表示没在构建器里装过，否则是 success 或 failed
+	InstalledBy   string     `json:"installedBy"`
+	InstalledAt   *time.Time `json:"installedAt"`
 }
+
+// 安装结果。
+const (
+	installSuccess = "success"
+	installFailed  = "failed"
+)
 
 // Settings 是构建器的设置，管理员在设置页修改。
 type Settings struct {
@@ -70,6 +82,14 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `
 
+// 后来加的字段。老数据库没有这些列时补上，已经有了就跳过。
+var migrations = []string{
+	`ALTER TABLE builds ADD COLUMN hint TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE builds ADD COLUMN install_status TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE builds ADD COLUMN installed_by TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE builds ADD COLUMN installed_at TIMESTAMP`,
+}
+
 // OpenStore 打开模块自己的 SQLite 文件；数据库只属于本模块，放在本模块的卷里。
 func OpenStore(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
@@ -82,18 +102,25 @@ func OpenStore(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	for _, m := range migrations {
+		if _, err := db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, err
+		}
+	}
 	return &Store{db: db}, nil
 }
 
-const buildColumns = `id, module_id, module_name, version, status, error, package_size, created_by, created_at, started_at, finished_at`
+const buildColumns = `id, module_id, module_name, version, status, error, hint, package_size, created_by, created_at, started_at, finished_at,
+	install_status, installed_by, installed_at`
 
 type scanner interface{ Scan(dest ...any) error }
 
 func scanBuild(row scanner) (*Build, error) {
 	var b Build
-	var started, finished sql.NullTime
-	err := row.Scan(&b.ID, &b.ModuleID, &b.ModuleName, &b.Version, &b.Status, &b.Error, &b.PackageSize,
-		&b.CreatedBy, &b.CreatedAt, &started, &finished)
+	var started, finished, installed sql.NullTime
+	err := row.Scan(&b.ID, &b.ModuleID, &b.ModuleName, &b.Version, &b.Status, &b.Error, &b.Hint, &b.PackageSize,
+		&b.CreatedBy, &b.CreatedAt, &started, &finished, &b.InstallStatus, &b.InstalledBy, &installed)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +129,9 @@ func scanBuild(row scanner) (*Build, error) {
 	}
 	if finished.Valid {
 		b.FinishedAt = &finished.Time
+	}
+	if installed.Valid {
+		b.InstalledAt = &installed.Time
 	}
 	return &b, nil
 }
@@ -155,13 +185,20 @@ func (s *Store) Start(ctx context.Context, id int64) error {
 	return err
 }
 
-func (s *Store) Finish(ctx context.Context, id int64, buildErr error, packageSize int64) error {
+func (s *Store) Finish(ctx context.Context, id int64, buildErr error, hint string, packageSize int64) error {
 	status, msg := statusSuccess, ""
 	if buildErr != nil {
 		status, msg = statusFailed, buildErr.Error()
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE builds SET status = ?, error = ?, package_size = ?, finished_at = ? WHERE id = ?`,
-		status, msg, packageSize, time.Now().UTC(), id)
+	_, err := s.db.ExecContext(ctx, `UPDATE builds SET status = ?, error = ?, hint = ?, package_size = ?, finished_at = ? WHERE id = ?`,
+		status, msg, hint, packageSize, time.Now().UTC(), id)
+	return err
+}
+
+// SetInstall 记下在构建器里安装这次构建的结果，再装一次会覆盖上一次的。
+func (s *Store) SetInstall(ctx context.Context, id int64, status, by string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE builds SET install_status = ?, installed_by = ?, installed_at = ? WHERE id = ?`,
+		status, by, time.Now().UTC(), id)
 	return err
 }
 
