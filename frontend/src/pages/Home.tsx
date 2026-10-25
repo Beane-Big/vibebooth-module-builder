@@ -132,9 +132,6 @@ export default function Home() {
   return (
     <>
       <header className="topbar">
-        <a className="back" href="/">
-          ← 返回应用
-        </a>
         <span className="title">构建器</span>
       </header>
       <main className="content stack">

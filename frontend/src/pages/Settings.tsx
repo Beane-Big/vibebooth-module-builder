@@ -36,9 +36,6 @@ export default function Settings() {
   return (
     <>
       <header className="topbar">
-        <a className="back" href="/settings">
-          ← 返回设置
-        </a>
         <span className="title">构建器 · 设置</span>
       </header>
       <main className="content stack">
