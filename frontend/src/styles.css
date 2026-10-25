@@ -93,7 +93,6 @@ button.link {
   border-bottom: 1px solid var(--border);
 }
 
-.back { color: var(--accent); text-decoration: none; }
 .title { font-weight: 600; }
 
 .content { max-width: 720px; margin: 0 auto; padding: 24px 16px; }
