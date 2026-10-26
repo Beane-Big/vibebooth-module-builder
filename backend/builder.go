@@ -254,7 +254,7 @@ func mirrorHint(log string, settings Settings) string {
 		npm = npm || strings.Contains(line, "registry.npmjs.org")
 		dockerHub = dockerHub || strings.Contains(line, "docker.io")
 	}
-	const where = "请管理员到门户“设置”页的“构建器 · 设置”"
+	const where = "请管理员点构建器顶栏右侧的“设置”"
 	var hints []string
 	switch {
 	case goProxy && settings.GoProxy == "":

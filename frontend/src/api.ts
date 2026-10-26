@@ -48,6 +48,20 @@ export const privilegeInfo: Record<string, string> = {
   "docker-build": "在服务器上构建镜像。它碰不到平台自己的程序，但能替换其他应用的镜像，只安装你信任的模块。",
 };
 
+// 平台上已经装好的模块，安装前用来告诉管理员是新装、重装、升级还是降级。
+export type Installed = { id: string; name: string; version: string };
+
+// compareVersions 按 x.y.z 逐段比较版本号，a 比 b 新时返回正数。
+export function compareVersions(a: string, b: string) {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -96,6 +110,7 @@ export const api = {
   settings: () => request<Settings>("/api/builder/settings"),
   saveSettings: (s: Settings) => request<Settings>("/api/builder/settings", { method: "PUT", body: JSON.stringify(s) }),
 
+  installed: () => request<Installed[]>("/api/platform/installer/modules"),
   // 一键安装：在浏览器里取回软件包，再用管理员的登录上传给平台安装器，和在门户“应用管理”页上传一样。
   // 模块声明了特权时安装器返回 409 和需要的特权，确认后带上 allowPrivileges 再装一次。
   install: async (b: Build, allowPrivileges = false) => {
