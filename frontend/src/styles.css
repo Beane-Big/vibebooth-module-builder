@@ -94,6 +94,8 @@ button.link {
 }
 
 .title { font-weight: 600; }
+/* 顶栏右侧的页面切换链接：构建记录和设置之间来回。 */
+.topbar .nav { margin-left: auto; color: var(--accent); font-size: 14px; text-decoration: none; }
 
 .content { max-width: 720px; margin: 0 auto; padding: 24px 16px; }
 
