@@ -39,6 +39,8 @@ body {
 .muted { color: var(--muted); font-size: 14px; }
 .error { color: var(--danger); font-size: 14px; margin: 0; }
 .success { color: var(--accent); font-size: 14px; margin: 0; }
+/* 构建失败时根据日志给出的处理建议，几条建议各占一行。 */
+.hint { font-size: 14px; margin: 0; padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--bg); white-space: pre-line; }
 
 .card {
   background: var(--surface);
@@ -91,8 +93,9 @@ button.link {
   border-bottom: 1px solid var(--border);
 }
 
-.back { color: var(--accent); text-decoration: none; }
 .title { font-weight: 600; }
+/* 顶栏右侧的页面切换链接：构建记录和设置之间来回。 */
+.topbar .nav { margin-left: auto; color: var(--accent); font-size: 14px; text-decoration: none; }
 
 .content { max-width: 720px; margin: 0 auto; padding: 24px 16px; }
 
@@ -128,7 +131,10 @@ input {
 .list-item.selected .item-name { color: var(--accent); }
 /* 手机上按钮放不下时整行换到下面，名字和时间不被挤成竖排。 */
 .list-main { display: flex; flex-direction: column; gap: 4px; min-width: 200px; flex: 1; }
-.item-name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.item-name { font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 日志在记录下方展开，占满整行。 */
+.list-item > .detail { flex-basis: 100%; min-width: 0; }
+.detail > ul { margin: 0; }
 
 .tag {
   font-size: 12px;
@@ -146,7 +152,7 @@ input {
 .field { display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
 
 pre.log {
-  margin: 8px 0 0;
+  margin: 0;
   padding: 12px;
   max-height: 480px;
   overflow: auto;

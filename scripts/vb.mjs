@@ -60,6 +60,13 @@ function ensureLockfile() {
   }
 }
 
+// requireDocker 在用 Docker 之前先确认它在运行；没运行时后面的报错看不出原因，比如会被当成“下载不了安装器镜像”。
+function requireDocker() {
+  if (output("docker", ["version", "--format", "{{.Server.Version}}"])) return;
+  die("连不上 Docker。请先安装并启动 Docker（Windows 和 Mac 上是 Docker Desktop），等它显示运行中再重新运行。" +
+    "不想装 Docker 的话，可以用 npm run pack:source 交给平台的构建器打包");
+}
+
 // installer 返回打包要用的安装器镜像，本机没有时下载发布版。
 function installer() {
   if (output("docker", ["image", "inspect", localInstaller])) return localInstaller;
@@ -67,7 +74,8 @@ function installer() {
   console.log(`下载安装器镜像 ${releasedInstaller}…`);
   const res = spawnSync("docker", ["pull", releasedInstaller], { stdio: "inherit" });
   if (res.status !== 0) {
-    die(`下载不了 ${releasedInstaller}。镜像还是私有的话，先用有 read:packages 权限的令牌运行 docker login ghcr.io；` +
+    die(`下载不了 ${releasedInstaller}。连不上 ghcr.io 时，可以改用 npm run pack:source 交给平台的构建器打包；` +
+      "镜像还是私有的话，先用有 read:packages 权限的令牌运行 docker login ghcr.io；" +
       "也可以先在平台仓库里运行 docker compose up -d --build，改用本机平台的安装器");
   }
   return releasedInstaller;
@@ -75,6 +83,7 @@ function installer() {
 
 function pack() {
   const { id, version } = manifest();
+  requireDocker();
   const installerImage = installer();
   ensureLockfile();
   const env = { ...process.env, VERSION: version };

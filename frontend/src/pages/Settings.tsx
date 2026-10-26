@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api, type Settings as SettingsData } from "../api";
 
-// 构建器的设置页，从门户“设置”页进入；保存时由后端检查“设置”菜单权限。
+// 构建器的设置页，从构建器顶栏的“设置”进入；保存时由后端检查“设置”菜单权限。
 export default function Settings() {
   const [form, setForm] = useState<SettingsData | null>(null);
   const [busy, setBusy] = useState(false);
@@ -36,10 +36,10 @@ export default function Settings() {
   return (
     <>
       <header className="topbar">
-        <a className="back" href="/settings">
-          ← 返回设置
-        </a>
         <span className="title">构建器 · 设置</span>
+        <a className="nav" href="/apps/builder/">
+          构建记录
+        </a>
       </header>
       <main className="content stack">
         {!form && (error ? <p className="error">{error}</p> : <p className="muted">加载中…</p>)}

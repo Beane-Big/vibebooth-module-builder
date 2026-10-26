@@ -17,7 +17,8 @@ import (
 )
 
 // builder 按上传顺序一个一个构建：服务器只有几核，同时构建只会更慢，还容易把内存吃满。
-// 每次构建的文件放在 <数据目录>/builds/<id>/：source.zip 是上传的源码包，build.log 是日志，package.zip 是打出的软件包。
+// 每次构建的文件放在 <数据目录>/builds/<id>/：source.zip 是上传的源码包，build.log 是日志，package.zip 是打出的软件包，
+// install.log 是在构建器里安装时平台安装器返回的日志。
 type builder struct {
 	store  *Store
 	docker *dockerClient
@@ -42,6 +43,9 @@ func (b *builder) buildDir(id int64) string {
 func (b *builder) sourcePath(id int64) string  { return filepath.Join(b.buildDir(id), "source.zip") }
 func (b *builder) logPath(id int64) string     { return filepath.Join(b.buildDir(id), "build.log") }
 func (b *builder) packagePath(id int64) string { return filepath.Join(b.buildDir(id), "package.zip") }
+func (b *builder) installLogPath(id int64) string {
+	return filepath.Join(b.buildDir(id), "install.log")
+}
 
 // run 处理构建队列，并且每小时按保留规则清理一次。
 func (b *builder) run(ctx context.Context) {
@@ -97,13 +101,14 @@ func (b *builder) runOne(ctx context.Context, id int64) {
 	log, err := os.Create(b.logPath(id))
 	if err != nil {
 		slog.Error("创建构建日志失败", "id", id, "err", err)
-		b.store.Finish(context.WithoutCancel(ctx), id, errors.New("创建构建日志失败"), 0)
+		b.store.Finish(context.WithoutCancel(ctx), id, errors.New("创建构建日志失败"), "", 0)
 		return
 	}
 	defer log.Close()
 	start := time.Now()
 	buildErr := b.build(ctx, rec, log)
 	var size int64
+	var hint string
 	if buildErr == nil {
 		if info, err := os.Stat(b.packagePath(id)); err == nil {
 			size = info.Size()
@@ -116,10 +121,16 @@ func (b *builder) runOne(ctx context.Context, id int64) {
 			buildErr = errors.New("构建已取消")
 		}
 		fmt.Fprintf(log, "\n构建失败: %v\n", buildErr)
+		if ctx.Err() == nil {
+			hint = b.mirrorHint(context.WithoutCancel(ctx), id)
+		}
+		if hint != "" {
+			fmt.Fprintf(log, "\n提示：%s\n", hint)
+		}
 	}
 	// 源码包只在构建时用到，构建完就删掉，省得占地方。
 	os.Remove(b.sourcePath(id))
-	if err := b.store.Finish(context.WithoutCancel(ctx), id, buildErr, size); err != nil {
+	if err := b.store.Finish(context.WithoutCancel(ctx), id, buildErr, hint, size); err != nil {
 		slog.Error("更新构建状态失败", "id", id, "err", err)
 	}
 	slog.Info("构建结束", "id", id, "module", rec.ModuleID, "version", rec.Version, "err", buildErr)
@@ -152,6 +163,8 @@ func (b *builder) build(ctx context.Context, rec *Build, log io.Writer) error {
 	if settings.GoProxy != "" {
 		args["GOPROXY"] = settings.GoProxy
 	}
+	// 写明这次用的镜像源，下载依赖失败时一眼能看出是不是没设置。
+	fmt.Fprintf(log, "Go 代理：%s\nnpm 镜像源：%s\n", orUnset(settings.GoProxy), orUnset(settings.NpmRegistry))
 
 	// 构建会占用 vb-<服务>:<版本> 这个名字。同名镜像可能属于平台上已经装好的同一版本，构建前给它打一个备份名，
 	// 导出后删掉新构建的镜像，再把名字还给原来的镜像，已安装的模块不受影响。
@@ -208,6 +221,66 @@ func (b *builder) build(ctx context.Context, rec *Build, log io.Writer) error {
 		return fmt.Errorf("打包失败: %w", err)
 	}
 	return nil
+}
+
+func orUnset(s string) string {
+	if s == "" {
+		return "未设置（用 Dockerfile 里的默认值，一般是官方源）"
+	}
+	return s
+}
+
+// 日志里出现这些字样，说明是网络连不上，不是代码的问题。
+var networkErrors = []string{"i/o timeout", "dial tcp", "no such host", "connection reset", "connection refused",
+	"TLS handshake timeout", "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ENOTFOUND"}
+
+// mirrorHint 读这次构建的日志，判断失败是不是因为连不上官方源，是的话返回该怎么处理；判断不出来返回空。
+func (b *builder) mirrorHint(ctx context.Context, id int64) string {
+	settings, err := b.store.Settings(ctx)
+	if err != nil {
+		return ""
+	}
+	log, _ := tail(b.logPath(id), maxLogSize)
+	return mirrorHint(log, settings)
+}
+
+func mirrorHint(log string, settings Settings) string {
+	var goProxy, npm, dockerHub bool
+	for line := range strings.Lines(log) {
+		if !containsAny(line, networkErrors) {
+			continue
+		}
+		goProxy = goProxy || strings.Contains(line, "proxy.golang.org")
+		npm = npm || strings.Contains(line, "registry.npmjs.org")
+		dockerHub = dockerHub || strings.Contains(line, "docker.io")
+	}
+	const where = "请管理员点构建器顶栏右侧的“设置”"
+	var hints []string
+	switch {
+	case goProxy && settings.GoProxy == "":
+		hints = append(hints, "连不上官方 Go 代理 proxy.golang.org，构建器还没设置 Go 代理。"+where+"把 Go 代理填成 https://goproxy.cn,direct，保存后重新上传。")
+	case goProxy:
+		hints = append(hints, "构建器已经设置了 Go 代理 "+settings.GoProxy+"，日志里却还在连 proxy.golang.org。检查 Dockerfile 有没有用 ARG GOPROXY 接收，以及代理地址里是不是还带着 proxy.golang.org。")
+	}
+	switch {
+	case npm && settings.NpmRegistry == "":
+		hints = append(hints, "连不上官方 npm 源 registry.npmjs.org，构建器还没设置 npm 镜像源。"+where+"把 npm 镜像源填成 https://registry.npmmirror.com，保存后重新上传。")
+	case npm:
+		hints = append(hints, "构建器已经设置了 npm 镜像源 "+settings.NpmRegistry+"，日志里却还在连 registry.npmjs.org。检查 Dockerfile 有没有用 ARG NPM_REGISTRY 接收。")
+	}
+	if dockerHub {
+		hints = append(hints, "服务器拉不到 Docker Hub 上的基础镜像。这要给服务器的 Docker 配镜像加速，见平台仓库的 DEPLOY-SERVER.md，构建器的设置管不到。")
+	}
+	return strings.Join(hints, "\n")
+}
+
+func containsAny(s string, subs []string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // backupName 是构建期间给同名旧镜像用的备份名，例如 vb-build-12-notes-backend:0.2.0。
