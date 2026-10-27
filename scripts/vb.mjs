@@ -18,7 +18,7 @@ const platformProject = "home-platform";
 // 打包时用安装器镜像检查模块包。本机跑着平台时用平台自己的，保证和要装进去的平台规则一致；
 // 没有平台时用发布版，对应平台仓库的标签 installer/v<版本>。
 const localInstaller = `${platformProject}-installer`;
-const releasedInstaller = "ghcr.io/beane-big/vibebooth-installer:0.2.0";
+const releasedInstaller = "ghcr.io/beane-big/vibebooth-installer:0.3.0";
 const isWindows = process.platform === "win32";
 // 容器里按本机用户写文件，生成的文件不归 root。Windows 上没有 uid，Docker Desktop 会自己处理文件属主。
 const asUser = isWindows ? [] : ["--user", `${process.getuid()}:${process.getgid()}`];
