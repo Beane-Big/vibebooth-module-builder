@@ -1,5 +1,7 @@
 github.com/Beane-Big/vibebooth/packages/manifest v0.1.0 h1:WEY43hwL99Rk4Ec8yoB80ZRZEbfIqawjVD6NKx99Gss=
 github.com/Beane-Big/vibebooth/packages/manifest v0.1.0/go.mod h1:VMAK97rzngg5pvWASO1n2pD/iaVRQ7iBTFdWgf+HSpE=
+github.com/Beane-Big/vibebooth/packages/manifest v0.1.1-0.20261026144306-4917dd88d72e h1:B6l7jvvudqU8slN/rznWNKC5rshojsjztNH59xG8sBU=
+github.com/Beane-Big/vibebooth/packages/manifest v0.1.1-0.20261026144306-4917dd88d72e/go.mod h1:VMAK97rzngg5pvWASO1n2pD/iaVRQ7iBTFdWgf+HSpE=
 github.com/Beane-Big/vibebooth/packages/modpkg v0.1.0 h1:EjazitVj/CjHyqVb7GUwQ1cxHO8q0cWitWxEOS4n5fY=
 github.com/Beane-Big/vibebooth/packages/modpkg v0.1.0/go.mod h1:ww4/pmkZGJY3mD8NYsdf2UP2YHPKou4p5JtbPRJ7sCA=
 github.com/Beane-Big/vibebooth/packages/sdk-go v0.1.0 h1:AZF9e53UYPNV3Wk13Bn6+Hkzubj13wg2XupZPEGEe3M=
