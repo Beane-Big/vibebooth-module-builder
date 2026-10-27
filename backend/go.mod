@@ -3,7 +3,7 @@ module vibebooth-module-builder/backend
 go 1.26.0
 
 require (
-	github.com/Beane-Big/vibebooth/packages/manifest v0.1.0
+	github.com/Beane-Big/vibebooth/packages/manifest v0.1.1-0.20261026144306-4917dd88d72e
 	github.com/Beane-Big/vibebooth/packages/modpkg v0.1.0
 	github.com/Beane-Big/vibebooth/packages/sdk-go v0.1.0
 	github.com/moby/patternmatcher v0.6.1
