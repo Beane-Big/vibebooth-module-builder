@@ -113,6 +113,8 @@ input {
   flex: 1;
   min-width: 0;
 }
+/* 选文件框后面有两个按钮，窄屏放不下时让按钮换到下一行，不把文件名挤没。 */
+input[type="file"] { min-width: 220px; }
 
 .list { list-style: none; margin: 0; padding: 0; }
 
