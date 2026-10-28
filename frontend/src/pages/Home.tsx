@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   api,
   ApiError,
@@ -23,6 +23,17 @@ const SELF_ID = "builder";
 // 刚在本页装完的结果；安装日志保存在后端，保存失败时日志也留在这里，免得看不到。
 type InstallNotice = { id: number; ok: boolean; message: string; log?: string };
 
+// 点“构建并安装”上传的记录，构建成功后在本页自动安装。存在 sessionStorage 里，刷新本页不丢，关掉页签就不再自动装。
+const AUTO_KEY = "builder:auto-install";
+
+function loadAuto(): number[] {
+  try {
+    return JSON.parse(sessionStorage.getItem(AUTO_KEY) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
 // 构建器首页：上传源码包、查看构建记录，日志在记录下方展开；成功的可以下载软件包或一键装到本平台。
 export default function Home() {
   const [me, setMe] = useState<Me | null>(null);
@@ -33,6 +44,8 @@ export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [fileKey, setFileKey] = useState(0);
   const [uploading, setUploading] = useState(false);
+  // 点了“构建并安装”、等确认；换了文件就要重新确认。
+  const [confirmAuto, setConfirmAuto] = useState(false);
   // 点了“删除”或“取消”、等确认的记录。
   const [removing, setRemoving] = useState<number | null>(null);
   const [installing, setInstalling] = useState<number | null>(null);
@@ -43,6 +56,9 @@ export default function Home() {
     null,
   );
   const [notice, setNotice] = useState<InstallNotice | null>(null);
+  const [auto, setAuto] = useState<number[]>(loadAuto);
+  // 正在查已装版本或安装的自动安装；查的时候 installing 还没设上，靠它避免同时开始装第二个。
+  const autoBusy = useRef(false);
 
   function load() {
     api
@@ -71,13 +87,38 @@ export default function Home() {
     return () => clearInterval(timer);
   }, [running]);
 
-  async function upload(e: FormEvent) {
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(AUTO_KEY, JSON.stringify(auto));
+    } catch {
+      // 浏览器不让存时只影响刷新后还记不记得，本页照常自动安装。
+    }
+  }, [auto]);
+
+  // 等着自动安装的记录构建结束后，一次装一个；正在安装或等管理员确认时先不动，结束后再看下一个。
+  useEffect(() => {
+    if (autoBusy.current || installing !== null || pending || confirming) return;
+    const b = builds.find((b) => auto.includes(b.id) && !isRunning(b));
+    if (!b) return;
+    setAuto((ids) => ids.filter((id) => id !== b.id));
+    if (b.status !== "success") {
+      setExpanded({ id: b.id, panel: "build" });
+      return;
+    }
+    autoBusy.current = true;
+    askInstall(b, true).finally(() => (autoBusy.current = false));
+  }, [builds, auto, installing, pending, confirming]);
+
+  // installAfter 为 true 是“构建并安装”：构建成功后自动安装，不用再点“安装”。
+  async function upload(e: FormEvent, installAfter = false) {
     e.preventDefault();
     if (!file) return;
     setUploading(true);
+    setConfirmAuto(false);
     setError("");
     try {
       const b = await api.upload(file);
+      if (installAfter) setAuto((ids) => [...ids, b.id]);
       setFile(null);
       setFileKey((k) => k + 1);
       setExpanded({ id: b.id, panel: "build" });
@@ -94,6 +135,7 @@ export default function Home() {
     setError("");
     try {
       await api.removeBuild(b.id);
+      setAuto((ids) => ids.filter((id) => id !== b.id));
       if (expanded?.id === b.id) setExpanded(null);
       load();
     } catch (err) {
@@ -106,13 +148,17 @@ export default function Home() {
   }
 
   // 点“安装”先查平台上装的是哪个版本，在记录下方请管理员确认。
-  async function askInstall(b: Build) {
+  // 构建并安装（auto）时已经表明要装，直接安装；只有降级、或者装构建器自己时还有别的构建没结束，才照常请管理员确认。
+  async function askInstall(b: Build, auto = false) {
     setConfirming(null);
     setNotice(null);
     setError("");
     try {
       const installed = await api.installed();
-      setPending({ id: b.id, current: installed.find((m) => m.id === b.moduleId) ?? null });
+      const current = installed.find((m) => m.id === b.moduleId) ?? null;
+      const downgrade = current !== null && compareVersions(b.version, current.version) < 0;
+      if (auto && !downgrade && !(b.moduleId === SELF_ID && running)) return install(b, false, current);
+      setPending({ id: b.id, current });
       setExpanded({ id: b.id, panel: "install" });
     } catch (err) {
       setError(err instanceof Error ? err.message : "读取已安装的应用失败");
@@ -120,9 +166,10 @@ export default function Home() {
   }
 
   // 一键安装：装完把结果和日志报给后端保存，记录上就会出现“安装日志”。
-  async function install(b: Build, allowPrivileges = false) {
-    // 平台上已装的同一个模块，从安装确认或特权确认里带过来，用来决定装完后的提示。
-    const current = pending?.id === b.id ? pending.current : confirming?.id === b.id ? confirming.current : null;
+  // current 是平台上已装的同一个模块，用来决定装完后的提示；不传时从安装确认或特权确认里带过来。
+  async function install(b: Build, allowPrivileges = false, current?: Installed | null) {
+    if (current === undefined)
+      current = pending?.id === b.id ? pending.current : confirming?.id === b.id ? confirming.current : null;
     setPending(null);
     setConfirming(null);
     setNotice(null);
@@ -180,13 +227,39 @@ export default function Home() {
               key={fileKey}
               type="file"
               accept=".zip"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              onChange={(e) => {
+                setFile(e.target.files?.[0] ?? null);
+                setConfirmAuto(false);
+              }}
               disabled={uploading}
             />
-            <button type="submit" disabled={!file || uploading}>
-              {uploading ? "上传中…" : "开始构建"}
-            </button>
+            {confirmAuto ? (
+              <>
+                <button type="button" onClick={(e) => upload(e, true)} disabled={!file || uploading}>
+                  {uploading ? "上传中…" : "确认构建并安装"}
+                </button>
+                <button className="secondary" type="button" onClick={() => setConfirmAuto(false)} disabled={uploading}>
+                  取消
+                </button>
+              </>
+            ) : (
+              <>
+                <button type="submit" disabled={!file || uploading}>
+                  {uploading ? "上传中…" : "开始构建"}
+                </button>
+                {me?.admin && (
+                  <button className="secondary" type="button" onClick={() => setConfirmAuto(true)} disabled={!file || uploading}>
+                    构建并安装
+                  </button>
+                )}
+              </>
+            )}
           </div>
+          {confirmAuto && file && (
+            <p className="hint">
+              构建 {file.name}，成功后直接装到本平台，不再询问。等待期间不要关闭本页；降级或模块需要特权时，仍会在记录下方请你确认。
+            </p>
+          )}
           {error && <p className="error">{error}</p>}
         </form>
 
@@ -209,6 +282,7 @@ export default function Home() {
                     <span className="item-name">
                       {b.moduleName} {b.version}
                       <span className={"tag tag-" + b.status}>{statusText[b.status]}</span>
+                      {auto.includes(b.id) && <span className="tag">构建后安装</span>}
                       {b.installStatus && (
                         <span className={"tag tag-" + b.installStatus}>
                           {b.installStatus === "success" ? "已安装" : "安装失败"}
