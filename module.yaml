@@ -4,7 +4,7 @@ id: builder              # 全局唯一，也是网址前缀 /apps/builder/ 和 
 name: "构建器"
 description: "上传模块源码包，在服务器上构建出软件包，可以一键安装或下载"
 icon: icon.svg
-version: 0.2.3           # 发布新版本前改大
+version: 0.2.4           # 发布新版本前改大
 services:                # 哪个容器接哪个网址前缀，安装器据此生成网关路由
   frontend: {port: 80}   # 容器 builder-frontend → /apps/builder/
   backend: {port: 8000}  # 容器 builder-backend → /api/builder/，健康检查 /api/builder/health
