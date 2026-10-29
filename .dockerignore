@@ -1,0 +1,8 @@
+# 前端镜像的构建目录是模块根目录（要用到 icon.svg），这里排除和前端无关的文件。后端的构建目录是 backend/，不受影响。
+.git
+.data
+dist
+backend
+scripts
+frontend/node_modules
+frontend/dist
