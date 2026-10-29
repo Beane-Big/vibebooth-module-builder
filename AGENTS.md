@@ -4,6 +4,7 @@
 
 - 模块 id 是 `builder`：页面在 `/apps/builder/` 下，接口在 `/api/builder/` 下，容器叫 `builder-frontend` 和 `builder-backend`。
 - 不要自己写网关路由标签、端口映射或网络，安装器会补上；`compose.yaml` 允许的字段见规范。
+- 图标只有一份：根目录的 `icon.svg`（`module.yaml` 里的 `icon`）。平台主页、浏览器页签和 iOS 添加到主屏幕都用它，构建前端时由 `frontend/vite-icon.ts` 自动复制一份、再画成 iOS 用的 `apple-touch-icon.png`，并写进 `index.html`。不要在 `frontend/` 里另放图标或手写图标链接；图标里不要用 `<text>`，文字先转成路径。
 - 不写登录代码。后端用 SDK `github.com/Beane-Big/vibebooth/packages/sdk-go/auth` 拿当前用户，接口权限用 `HasMenu("<菜单 id>")` 判断。
 - 后端必须保留 `GET /api/builder/health`，正常时返回 2xx。
 - 数据只存在 `compose.yaml` 里声明的卷里，默认用 SQLite。改表结构要兼容老数据。

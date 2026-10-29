@@ -11,7 +11,7 @@ services:
 
   builder-frontend:
     image: vb-builder-frontend:${VERSION}
-    build: ./frontend
+    build: {context: ., dockerfile: frontend/Dockerfile}  # 构建目录是模块根目录，要用到 icon.svg
     depends_on:
       - builder-backend
 
