@@ -30,9 +30,10 @@ export type Settings = {
   maxPackages: number;
   maxDays: number;
   cacheGB: number;
-  npmRegistry: string;
-  goProxy: string;
+  buildArgs: BuildArg[]; // 构建时只传给 Dockerfile 里用 ARG 声明了的那几个
 };
+
+export type BuildArg = { name: string; value: string };
 
 export const statusText: Record<BuildStatus, string> = {
   queued: "排队中",
