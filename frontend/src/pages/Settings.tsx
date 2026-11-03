@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, type Settings as SettingsData } from "../api";
+import { api, type BuildArg, type Settings as SettingsData } from "../api";
 
 // 构建器的设置页，从构建器顶栏的“设置”进入；保存时由后端检查“设置”菜单权限。
 export default function Settings() {
@@ -32,6 +32,8 @@ export default function Settings() {
   }
 
   const set = (patch: Partial<SettingsData>) => form && setForm({ ...form, ...patch });
+  const setArg = (i: number, patch: Partial<BuildArg>) =>
+    form && set({ buildArgs: form.buildArgs.map((a, k) => (k === i ? { ...a, ...patch } : a)) });
 
   return (
     <>
@@ -85,27 +87,36 @@ export default function Settings() {
               </label>
             </section>
             <section className="card stack">
-              <h1>镜像源</h1>
+              <h1>构建参数</h1>
               <p className="muted">
-                构建时作为 <code>NPM_REGISTRY</code> 和 <code>GOPROXY</code> 传给 Dockerfile，Dockerfile 里用 ARG
-                声明了才会生效。留空表示不传，用官方源。
+                按服务器的网络填写，比如国内的镜像源。构建时构建器读每个应用的 Dockerfile，只把其中用{" "}
+                <code>ARG</code> 声明了的参数传过去，没填的用 Dockerfile 里的默认值；构建日志里会列出每个参数传了什么。应用需要哪些参数看应用的说明，常见的有 <code>NPM_REGISTRY</code>（如 https://registry.npmmirror.com）、
+                <code>GOPROXY</code>（如 https://goproxy.cn,direct）。
               </p>
-              <label className="field">
-                npm 镜像源
-                <input
-                  value={form.npmRegistry}
-                  placeholder="例如 https://registry.npmmirror.com"
-                  onChange={(e) => set({ npmRegistry: e.target.value })}
-                />
-              </label>
-              <label className="field">
-                Go 代理
-                <input
-                  value={form.goProxy}
-                  placeholder="例如 https://goproxy.cn,direct"
-                  onChange={(e) => set({ goProxy: e.target.value })}
-                />
-              </label>
+              {form.buildArgs.map((a, i) => (
+                <div className="arg-row" key={i}>
+                  <input
+                    value={a.name}
+                    placeholder="参数名，例如 NPM_REGISTRY"
+                    aria-label="参数名"
+                    onChange={(e) => setArg(i, { name: e.target.value })}
+                  />
+                  <input
+                    value={a.value}
+                    placeholder="值"
+                    aria-label="值"
+                    onChange={(e) => setArg(i, { value: e.target.value })}
+                  />
+                  <button type="button" className="link" onClick={() => set({ buildArgs: form.buildArgs.filter((_, k) => k !== i) })}>
+                    删除
+                  </button>
+                </div>
+              ))}
+              <div>
+                <button type="button" className="secondary" onClick={() => set({ buildArgs: [...form.buildArgs, { name: "", value: "" }] })}>
+                  添加参数
+                </button>
+              </div>
             </section>
             <div className="actions">
               <button type="submit" disabled={busy}>

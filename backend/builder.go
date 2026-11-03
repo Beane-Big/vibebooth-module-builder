@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -156,15 +157,6 @@ func (b *builder) build(ctx context.Context, rec *Build, log io.Writer) error {
 	if err != nil {
 		return err
 	}
-	args := map[string]string{}
-	if settings.NpmRegistry != "" {
-		args["NPM_REGISTRY"] = settings.NpmRegistry
-	}
-	if settings.GoProxy != "" {
-		args["GOPROXY"] = settings.GoProxy
-	}
-	// 写明这次用的镜像源，下载依赖失败时一眼能看出是不是没设置。
-	fmt.Fprintf(log, "Go 代理：%s\nnpm 镜像源：%s\n", orUnset(settings.GoProxy), orUnset(settings.NpmRegistry))
 
 	// 构建会占用 vb-<服务>:<版本> 这个名字。同名镜像可能属于平台上已经装好的同一版本，构建前给它打一个备份名，
 	// 导出后删掉新构建的镜像，再把名字还给原来的镜像，已安装的模块不受影响。
@@ -185,6 +177,10 @@ func (b *builder) build(ctx context.Context, rec *Build, log io.Writer) error {
 			backups[t.Image] = backup
 		}
 		images = append(images, t.Image)
+		args, err := buildArgsFor(filepath.Join(work, filepath.FromSlash(t.Context), filepath.FromSlash(t.Dockerfile)), settings, log)
+		if err != nil {
+			return err
+		}
 		pr, pw := io.Pipe()
 		go func() {
 			pw.CloseWithError(contextTar(filepath.Join(work, filepath.FromSlash(t.Context)), t.Dockerfile, pw))
@@ -223,16 +219,58 @@ func (b *builder) build(ctx context.Context, rec *Build, log io.Writer) error {
 	return nil
 }
 
-func orUnset(s string) string {
-	if s == "" {
-		return "未设置（用 Dockerfile 里的默认值，一般是官方源）"
+// buildArgsFor 读 Dockerfile 里用 ARG 声明的参数，只传设置里有的那几个，并在日志里写明每个参数传了什么，
+// 下载依赖失败时一眼能看出是不是没设置。
+func buildArgsFor(dockerfile string, settings Settings, log io.Writer) (map[string]string, error) {
+	data, err := os.ReadFile(dockerfile)
+	if err != nil {
+		return nil, err
 	}
-	return s
+	args := map[string]string{}
+	names := dockerfileArgs(string(data))
+	if len(names) == 0 {
+		fmt.Fprintln(log, "Dockerfile 没有声明构建参数")
+	}
+	for _, name := range names {
+		if v := settings.Arg(name); v != "" {
+			args[name] = v
+			fmt.Fprintf(log, "构建参数 %s：%s\n", name, v)
+		} else {
+			fmt.Fprintf(log, "构建参数 %s%s\n", name, unsetArg)
+		}
+	}
+	return args, nil
+}
+
+// 日志里没设置的构建参数这样写，mirrorHint 靠它找出来。
+const unsetArg = "：构建器没设置，用 Dockerfile 里的默认值"
+
+// dockerfileArgs 返回 Dockerfile 里 ARG 声明的参数名，按出现顺序、不重复。
+// 一行可以声明几个（ARG A=1 B），行尾的反斜杠表示续行；Docker 内置的代理参数（HTTP_PROXY 等）也会列出来，设置里有就传。
+func dockerfileArgs(dockerfile string) []string {
+	var names []string
+	seen := map[string]bool{}
+	text := strings.ReplaceAll(strings.ReplaceAll(dockerfile, "\\\r\n", " "), "\\\n", " ")
+	for line := range strings.Lines(text) {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !strings.EqualFold(fields[0], "ARG") {
+			continue
+		}
+		for _, f := range fields[1:] {
+			name, _, _ := strings.Cut(f, "=")
+			if argName.MatchString(name) && !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+		}
+	}
+	return names
 }
 
 // 日志里出现这些字样，说明是网络连不上，不是代码的问题。
 var networkErrors = []string{"i/o timeout", "dial tcp", "no such host", "connection reset", "connection refused",
-	"TLS handshake timeout", "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ENOTFOUND"}
+	"TLS handshake timeout", "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ENOTFOUND",
+	"timed out", "Network is unreachable", "Temporary failure in name resolution", "Failed to establish a new connection"}
 
 // mirrorHint 读这次构建的日志，判断失败是不是因为连不上官方源，是的话返回该怎么处理；判断不出来返回空。
 func (b *builder) mirrorHint(ctx context.Context, id int64) string {
@@ -245,28 +283,47 @@ func (b *builder) mirrorHint(ctx context.Context, id int64) string {
 }
 
 func mirrorHint(log string, settings Settings) string {
-	var goProxy, npm, dockerHub bool
+	var goProxy, npm, dockerHub, network bool
+	var unset []string
 	for line := range strings.Lines(log) {
+		if name, ok := strings.CutPrefix(strings.TrimSpace(line), "构建参数 "); ok {
+			if name, ok := strings.CutSuffix(name, unsetArg); ok && !slices.Contains(unset, name) {
+				unset = append(unset, name)
+			}
+		}
 		if !containsAny(line, networkErrors) {
 			continue
 		}
+		network = true
 		goProxy = goProxy || strings.Contains(line, "proxy.golang.org")
 		npm = npm || strings.Contains(line, "registry.npmjs.org")
 		dockerHub = dockerHub || strings.Contains(line, "docker.io")
 	}
 	const where = "请管理员点构建器顶栏右侧的“设置”"
 	var hints []string
-	switch {
-	case goProxy && settings.GoProxy == "":
-		hints = append(hints, "连不上官方 Go 代理 proxy.golang.org，构建器还没设置 Go 代理。"+where+"把 Go 代理填成 https://goproxy.cn,direct，保存后重新上传。")
+	switch goProxy, v := goProxy, settings.Arg("GOPROXY"); {
+	case goProxy && v == "":
+		hints = append(hints, "连不上官方 Go 代理 proxy.golang.org，构建器还没设置构建参数 GOPROXY。"+where+"加一个构建参数 GOPROXY = https://goproxy.cn,direct，保存后重新上传。")
 	case goProxy:
-		hints = append(hints, "构建器已经设置了 Go 代理 "+settings.GoProxy+"，日志里却还在连 proxy.golang.org。检查 Dockerfile 有没有用 ARG GOPROXY 接收，以及代理地址里是不是还带着 proxy.golang.org。")
+		hints = append(hints, "构建器已经设置了 GOPROXY = "+v+"，日志里却还在连 proxy.golang.org。检查 Dockerfile 有没有用 ARG GOPROXY 接收，以及代理地址里是不是还带着 proxy.golang.org。")
 	}
-	switch {
-	case npm && settings.NpmRegistry == "":
-		hints = append(hints, "连不上官方 npm 源 registry.npmjs.org，构建器还没设置 npm 镜像源。"+where+"把 npm 镜像源填成 https://registry.npmmirror.com，保存后重新上传。")
+	switch npm, v := npm, settings.Arg("NPM_REGISTRY"); {
+	case npm && v == "":
+		hints = append(hints, "连不上官方 npm 源 registry.npmjs.org，构建器还没设置构建参数 NPM_REGISTRY。"+where+"加一个构建参数 NPM_REGISTRY = https://registry.npmmirror.com，保存后重新上传。")
 	case npm:
-		hints = append(hints, "构建器已经设置了 npm 镜像源 "+settings.NpmRegistry+"，日志里却还在连 registry.npmjs.org。检查 Dockerfile 有没有用 ARG NPM_REGISTRY 接收。")
+		hints = append(hints, "构建器已经设置了 NPM_REGISTRY = "+v+"，日志里却还在连 registry.npmjs.org。检查 Dockerfile 有没有用 ARG NPM_REGISTRY 接收。")
+	}
+	// 别的下载源构建器不认识，只能根据模块声明了、但没设置的参数提醒一下。
+	if network && !dockerHub {
+		var others []string
+		for _, name := range unset {
+			if name != "GOPROXY" && name != "NPM_REGISTRY" {
+				others = append(others, name)
+			}
+		}
+		if len(others) > 0 {
+			hints = append(hints, "这个应用的 Dockerfile 还声明了构建参数 "+strings.Join(others, "、")+"，构建器没设置，用的是 Dockerfile 里的默认下载源。如果日志里连不上的是这些源，"+where+"按应用的说明加上这些构建参数（通常填国内镜像地址），保存后重新上传。")
+		}
 	}
 	if dockerHub {
 		hints = append(hints, "服务器拉不到 Docker Hub 上的基础镜像。这要给服务器的 Docker 配镜像加速，见平台仓库的 DEPLOY-SERVER.md，构建器的设置管不到。")

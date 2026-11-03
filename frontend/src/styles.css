@@ -152,6 +152,12 @@ input[type="file"] { min-width: 220px; }
 .tag-failed { color: var(--danger); border-color: var(--danger); }
 
 .field { display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.arg-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto; gap: 8px; align-items: center; }
+/* 窄屏上参数名单独一行，名字和网址都不被截断。 */
+@media (max-width: 600px) {
+  .arg-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .arg-row > :first-child { grid-column: 1 / -1; }
+}
 
 pre.log {
   margin: 0;

@@ -13,3 +13,4 @@
 - 后端通过环境变量 `DOCKER_HOST`（安装器设置，指向平台的构建代理）调用 Docker 接口，只用构建代理放行的那几个接口；代理拒绝的请求会返回 403，原因写在构建代理的日志里。
 - 校验和打包用平台仓库的 `packages/manifest` 和 `packages/modpkg`，和安装器是同一套规则，不要在这里另写一份。平台改了这两个包并打了新标签后，改 `backend/go.mod` 里的版本即可，构建镜像时会下载。
 - 后端加了 Go 依赖不用在本机运行 `go mod tidy`，构建镜像时会补齐；Dockerfile 里的 `ARG GOPROXY`、`ARG NPM_REGISTRY` 和缓存挂载不要删，服务器构建靠它们换镜像源、复用下载过的依赖。
+- 构建器不参与应用的业务：构建参数是管理员填的通用列表（`Settings.BuildArgs`），构建时按应用 Dockerfile 里的 `ARG` 匹配后传入（`buildArgsFor`）。不要在构建器里为某个应用或某种语言写死参数名；`mirrorHint` 里认识 Go、npm 的官方源只是为了给出填写提示。

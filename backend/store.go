@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -47,14 +50,30 @@ const (
 
 // Settings 是构建器的设置，管理员在设置页修改。
 type Settings struct {
-	MaxPackages int    `json:"maxPackages"` // 每个模块最多保留几个软件包
-	MaxDays     int    `json:"maxDays"`     // 软件包最多保留几天
-	CacheGB     int    `json:"cacheGB"`     // 构建缓存（下载的依赖、没变的构建步骤）最多占多少 GB
-	NpmRegistry string `json:"npmRegistry"` // 构建时传给 Dockerfile 的 NPM_REGISTRY，空表示不传
-	GoProxy     string `json:"goProxy"`     // 构建时传给 Dockerfile 的 GOPROXY，空表示不传
+	MaxPackages int `json:"maxPackages"` // 每个模块最多保留几个软件包
+	MaxDays     int `json:"maxDays"`     // 软件包最多保留几天
+	CacheGB     int `json:"cacheGB"`     // 构建缓存（下载的依赖、没变的构建步骤）最多占多少 GB
+	// 构建参数：管理员按服务器的网络填（比如国内的镜像源）。构建时只把模块 Dockerfile 里用 ARG 声明了的那几个传过去，
+	// 构建器不认识任何参数名，模块需要什么由模块自己声明。
+	BuildArgs []BuildArg `json:"buildArgs"`
 }
 
-var defaultSettings = Settings{MaxPackages: 5, MaxDays: 30, CacheGB: 5}
+type BuildArg struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// Arg 返回某个构建参数的值，没设置时为空。
+func (st Settings) Arg(name string) string {
+	for _, a := range st.BuildArgs {
+		if a.Name == name {
+			return a.Value
+		}
+	}
+	return ""
+}
+
+var defaultSettings = Settings{MaxPackages: 5, MaxDays: 30, CacheGB: 5, BuildArgs: []BuildArg{}}
 
 type Store struct {
 	db *sql.DB
@@ -255,6 +274,9 @@ func (s *Store) Settings(ctx context.Context) (Settings, error) {
 		return st, err
 	}
 	defer rows.Close()
+	// 0.2.x 只有 npm 镜像源和 Go 代理两项（npmRegistry、goProxy），没有 buildArgs 时把它们换成同名的构建参数。
+	var legacy []BuildArg
+	hasArgs := false
 	for rows.Next() {
 		var key, value string
 		if err := rows.Scan(&key, &value); err != nil {
@@ -268,11 +290,24 @@ func (s *Store) Settings(ctx context.Context) (Settings, error) {
 			st.MaxDays = n
 		case "cacheGB":
 			st.CacheGB = n
+		case "buildArgs":
+			hasArgs = true
+			if err := json.Unmarshal([]byte(value), &st.BuildArgs); err != nil {
+				return st, fmt.Errorf("读取构建参数失败: %w", err)
+			}
 		case "npmRegistry":
-			st.NpmRegistry = value
+			if value != "" {
+				legacy = append(legacy, BuildArg{"NPM_REGISTRY", value})
+			}
 		case "goProxy":
-			st.GoProxy = value
+			if value != "" {
+				legacy = append(legacy, BuildArg{"GOPROXY", value})
+			}
 		}
+	}
+	if !hasArgs && legacy != nil {
+		slices.SortFunc(legacy, func(a, b BuildArg) int { return strings.Compare(a.Name, b.Name) })
+		st.BuildArgs = legacy
 	}
 	return st, rows.Err()
 }
@@ -283,17 +318,24 @@ func (s *Store) SaveSettings(ctx context.Context, st Settings) error {
 		return err
 	}
 	defer tx.Rollback()
+	args, err := json.Marshal(st.BuildArgs)
+	if err != nil {
+		return err
+	}
 	values := map[string]string{
 		"maxPackages": strconv.Itoa(st.MaxPackages),
 		"maxDays":     strconv.Itoa(st.MaxDays),
 		"cacheGB":     strconv.Itoa(st.CacheGB),
-		"npmRegistry": st.NpmRegistry,
-		"goProxy":     st.GoProxy,
+		"buildArgs":   string(args),
 	}
 	for key, value := range values {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, value); err != nil {
 			return err
 		}
+	}
+	// 老版本的两项已经并进构建参数，删掉免得以后又被读成构建参数。
+	if _, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE key IN ('npmRegistry', 'goProxy')`); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
