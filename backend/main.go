@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -310,7 +311,7 @@ func (h *handlers) saveSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "格式错误")
 		return
 	}
-	st.NpmRegistry, st.GoProxy = strings.TrimSpace(st.NpmRegistry), strings.TrimSpace(st.GoProxy)
+	st.BuildArgs = cleanBuildArgs(st.BuildArgs)
 	if msg := validateSettings(st); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
@@ -322,6 +323,18 @@ func (h *handlers) saveSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
+// cleanBuildArgs 去掉首尾空格；名字和值都空着的行是点了“添加参数”没填，直接去掉，不当成错误。
+func cleanBuildArgs(in []BuildArg) []BuildArg {
+	out := []BuildArg{}
+	for _, a := range in {
+		a.Name, a.Value = strings.TrimSpace(a.Name), strings.TrimSpace(a.Value)
+		if a.Name != "" || a.Value != "" {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 func validateSettings(st Settings) string {
 	switch {
 	case st.MaxPackages < 1 || st.MaxPackages > 50:
@@ -330,18 +343,30 @@ func validateSettings(st Settings) string {
 		return "保留天数要在 1 到 365 之间"
 	case st.CacheGB < 1 || st.CacheGB > 100:
 		return "构建缓存上限要在 1 到 100 GB 之间"
-	case st.NpmRegistry != "" && !isHTTPURL(st.NpmRegistry):
-		return "npm 镜像源要是 http:// 或 https:// 开头的网址"
-	case strings.ContainsAny(st.GoProxy, " \t\r\n"):
-		return "Go 代理不能有空格"
+	case len(st.BuildArgs) > maxBuildArgs:
+		return fmt.Sprintf("构建参数最多 %d 个", maxBuildArgs)
+	}
+	seen := map[string]bool{}
+	for _, a := range st.BuildArgs {
+		switch {
+		case !argName.MatchString(a.Name):
+			return "构建参数名 " + strconv.Quote(a.Name) + " 不对：只能用英文字母、数字和下划线，不能以数字开头"
+		case seen[a.Name]:
+			return "构建参数 " + a.Name + " 重复了"
+		case a.Value == "" || strings.ContainsAny(a.Value, " \t\r\n"):
+			return "构建参数 " + a.Name + " 的值不能为空，也不能有空格"
+		case len(a.Value) > 2000:
+			return "构建参数 " + a.Name + " 的值太长"
+		}
+		seen[a.Name] = true
 	}
 	return ""
 }
 
-func isHTTPURL(s string) bool {
-	u, err := url.Parse(s)
-	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
-}
+const maxBuildArgs = 30
+
+// 构建参数名和 Dockerfile 里 ARG 的写法一样。
+var argName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // ---- 工具函数 ----
 

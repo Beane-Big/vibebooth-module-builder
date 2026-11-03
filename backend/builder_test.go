@@ -229,6 +229,17 @@ func TestExpired(t *testing.T) {
 	}
 }
 
+func TestCleanBuildArgs(t *testing.T) {
+	got := cleanBuildArgs([]BuildArg{{" GOPROXY ", " https://goproxy.cn,direct "}, {"", ""}, {" ", ""}, {"A", ""}})
+	want := []BuildArg{{"GOPROXY", "https://goproxy.cn,direct"}, {"A", ""}}
+	if !slices.Equal(got, want) {
+		t.Errorf("cleanBuildArgs = %v，应为 %v（空行去掉，只填了名字的留着让校验报错）", got, want)
+	}
+	if cleanBuildArgs(nil) == nil {
+		t.Error("应该返回空列表，不是 nil")
+	}
+}
+
 func TestValidateSettings(t *testing.T) {
 	if msg := validateSettings(defaultSettings); msg != "" {
 		t.Errorf("默认设置应该合法: %s", msg)
@@ -237,13 +248,40 @@ func TestValidateSettings(t *testing.T) {
 		{MaxPackages: 0, MaxDays: 30, CacheGB: 5},
 		{MaxPackages: 5, MaxDays: 0, CacheGB: 5},
 		{MaxPackages: 5, MaxDays: 30, CacheGB: 0},
-		{MaxPackages: 5, MaxDays: 30, CacheGB: 5, NpmRegistry: "registry.npmmirror.com"},
-		{MaxPackages: 5, MaxDays: 30, CacheGB: 5, GoProxy: "a b"},
+		{MaxPackages: 5, MaxDays: 30, CacheGB: 5, BuildArgs: []BuildArg{{"1BAD", "x"}}},
+		{MaxPackages: 5, MaxDays: 30, CacheGB: 5, BuildArgs: []BuildArg{{"GOPROXY", "a b"}}},
+		{MaxPackages: 5, MaxDays: 30, CacheGB: 5, BuildArgs: []BuildArg{{"GOPROXY", ""}}},
+		{MaxPackages: 5, MaxDays: 30, CacheGB: 5, BuildArgs: []BuildArg{{"A", "1"}, {"A", "2"}}},
 	}
 	for _, st := range bad {
 		if validateSettings(st) == "" {
 			t.Errorf("%+v 应该被拒绝", st)
 		}
+	}
+}
+
+func TestDockerfileArgs(t *testing.T) {
+	df := "# ARG COMMENTED\nFROM python:3.12-slim\nARG PIP_INDEX_URL=https://pypi.org/simple\narg HF_ENDPOINT\nARG A=1 \\\n    B\nRUN echo ARG NOT_ME\nARG PIP_INDEX_URL\n"
+	if got, want := dockerfileArgs(df), []string{"PIP_INDEX_URL", "HF_ENDPOINT", "A", "B"}; !slices.Equal(got, want) {
+		t.Errorf("dockerfileArgs = %v，应为 %v", got, want)
+	}
+}
+
+func TestBuildArgsFor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Dockerfile")
+	os.WriteFile(path, []byte("FROM alpine\nARG GOPROXY\nARG HF_ENDPOINT=https://huggingface.co\n"), 0o644)
+	st := Settings{BuildArgs: []BuildArg{{"GOPROXY", "https://goproxy.cn,direct"}, {"NPM_REGISTRY", "https://registry.npmmirror.com"}}}
+	var log strings.Builder
+	args, err := buildArgsFor(path, st, &log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 只传 Dockerfile 声明了的；没声明的 NPM_REGISTRY 不传，声明了但没设置的 HF_ENDPOINT 写进日志。
+	if len(args) != 1 || args["GOPROXY"] != "https://goproxy.cn,direct" {
+		t.Errorf("args = %v", args)
+	}
+	if !strings.Contains(log.String(), "构建参数 HF_ENDPOINT"+unsetArg) {
+		t.Errorf("日志里应该写明 HF_ENDPOINT 没设置: %q", log.String())
 	}
 }
 
@@ -261,7 +299,8 @@ func TestMirrorHint(t *testing.T) {
 		want     []string
 	}{
 		{"Go 代理没设置", goLog, Settings{}, []string{"goproxy.cn"}},
-		{"Go 代理设置了", goLog, Settings{GoProxy: "https://goproxy.cn,direct"}, []string{"ARG GOPROXY"}},
+		{"Go 代理设置了", goLog, Settings{BuildArgs: []BuildArg{{"GOPROXY", "https://goproxy.cn,direct"}}}, []string{"ARG GOPROXY"}},
+		{"别的源没设置", "构建参数 HF_ENDPOINT" + unsetArg + "\nurlopen error [Errno 110] Connection timed out ETIMEDOUT\n", Settings{}, []string{"HF_ENDPOINT"}},
 		{"npm 镜像源没设置", npmLog, Settings{}, []string{"registry.npmmirror.com"}},
 		{"Docker Hub", hubLog, Settings{}, []string{"DEPLOY-SERVER.md"}},
 		{"几种一起", goLog + npmLog, Settings{}, []string{"goproxy.cn", "registry.npmmirror.com"}},
@@ -323,5 +362,35 @@ func TestMigrateOldDB(t *testing.T) {
 	store.db.Close()
 	if _, err := OpenStore(path); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// 0.2.x 存的 npm 镜像源和 Go 代理读出来是同名的构建参数，保存后老的两项删掉。
+func TestSettingsLegacyMirrors(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	store.db.Exec(`INSERT INTO settings (key, value) VALUES ('npmRegistry', 'https://registry.npmmirror.com'), ('goProxy', 'https://goproxy.cn,direct')`)
+	st, err := store.Settings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []BuildArg{{"GOPROXY", "https://goproxy.cn,direct"}, {"NPM_REGISTRY", "https://registry.npmmirror.com"}}
+	if !slices.Equal(st.BuildArgs, want) {
+		t.Fatalf("BuildArgs = %v，应为 %v", st.BuildArgs, want)
+	}
+	st.BuildArgs = []BuildArg{{"HF_ENDPOINT", "https://hf-mirror.com"}}
+	if err := store.SaveSettings(ctx, st); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ = store.Settings(ctx); !slices.Equal(st.BuildArgs, []BuildArg{{"HF_ENDPOINT", "https://hf-mirror.com"}}) {
+		t.Errorf("删掉的老设置又出现了: %v", st.BuildArgs)
+	}
+	// 什么都没存过时是空列表，不是 null。
+	fresh, _ := OpenStore(filepath.Join(t.TempDir(), "f.db"))
+	if st, _ := fresh.Settings(ctx); st.BuildArgs == nil {
+		t.Error("BuildArgs 不该是 nil")
 	}
 }
