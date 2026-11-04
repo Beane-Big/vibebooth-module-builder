@@ -112,13 +112,13 @@ export const api = {
   saveSettings: (s: Settings) => request<Settings>("/api/builder/settings", { method: "PUT", body: JSON.stringify(s) }),
 
   installed: () => request<Installed[]>("/api/platform/installer/modules"),
-  // 一键安装：在浏览器里取回软件包，再用管理员的登录上传给平台安装器，和在门户“应用管理”页上传一样。
-  // 模块声明了特权时安装器返回 409 和需要的特权，确认后带上 allowPrivileges 再装一次。
+  // 一键安装在服务器上完成：先向后端要一个一次性的下载地址，再用管理员的登录把地址交给平台安装器，
+  // 安装器在内部网络里直接下载软件包，几百 MB 的软件包也不用经过浏览器。
+  // 模块声明了特权时安装器返回 409 和需要的特权，确认后带上 allowPrivileges 再装一次（地址只能用一次，会重新要）。
   install: async (b: Build, allowPrivileges = false) => {
-    const res = await fetch(packageUrl(b.id));
-    if (!res.ok) throw new ApiError(res.status, "取回软件包失败");
+    const { url } = await request<{ url: string }>(`/api/builder/builds/${b.id}/install-link`, { method: "POST" });
     const form = new FormData();
-    form.append("package", new File([await res.blob()], `${b.moduleId}-${b.version}.zip`));
+    form.append("url", url);
     if (allowPrivileges) form.append("allowPrivileges", "true");
     return request<{ log: string }>("/api/platform/installer/modules", { method: "POST", body: form });
   },

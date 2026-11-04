@@ -36,7 +36,7 @@ func main() {
 	}
 	b := newBuilder(store, docker, dataDir)
 	go b.run(context.Background())
-	h := &handlers{store: store, builder: b}
+	h := &handlers{store: store, builder: b, links: newInstallLinks()}
 	verifier := auth.NewVerifier(env("JWKS_URL", "http://core:8080/api/platform/.well-known/jwks.json"), moduleID)
 
 	// 对内接口：只给本模块前端用，需要登录。
@@ -49,6 +49,7 @@ func main() {
 	api.HandleFunc("DELETE /api/builder/builds/{id}", h.remove)
 	api.HandleFunc("GET /api/builder/builds/{id}/install", h.installLog)
 	api.HandleFunc("PUT /api/builder/builds/{id}/install", requireAdmin(h.saveInstall))
+	api.HandleFunc("POST /api/builder/builds/{id}/install-link", requireAdmin(h.createInstallLink))
 	// 保留规则所有人都能看，构建记录页据此显示每条记录什么时候删除。
 	api.HandleFunc("GET /api/builder/rules", h.rules)
 	// 保留规则和镜像源属于设置，只有有“设置”菜单的人能改；门户只是对他们显示设置入口，权限以这里为准。
@@ -65,6 +66,8 @@ func main() {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.Handle("/api/builder/", verifier.Middleware(api))
+	// 平台安装器在内部网络里下载软件包，见 installlink.go。
+	mux.HandleFunc("GET /internal/packages/{token}", h.internalPackage)
 
 	srv := &http.Server{Addr: ":8000", Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	slog.Info("builder 模块已启动", "addr", srv.Addr)
@@ -76,6 +79,7 @@ func main() {
 type handlers struct {
 	store   *Store
 	builder *builder
+	links   *installLinks
 }
 
 func (h *handlers) me(w http.ResponseWriter, r *http.Request) {
@@ -227,7 +231,7 @@ func (h *handlers) remove(w http.ResponseWriter, r *http.Request) {
 // maxInstallLogSize 是安装日志最多保存的长度，安装器的日志一般只有几 KB。
 const maxInstallLogSize = 1 << 20
 
-// saveInstall 记下在构建器里安装的结果和日志。安装是浏览器直接交给平台安装器的，装完由前端报回来。
+// saveInstall 记下在构建器里安装的结果和日志。安装请求由前端发给平台安装器（软件包由安装器在内部网络里下载，见 installlink.go），装完由前端报回来。
 func (h *handlers) saveInstall(w http.ResponseWriter, r *http.Request) {
 	rec, ok := h.find(w, r)
 	if !ok {
