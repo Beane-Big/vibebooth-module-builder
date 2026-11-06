@@ -76,6 +76,11 @@ export class ApiError extends Error {
 
 // 调用本模块后端的对内接口和平台安装器；登录 Cookie 由浏览器自动带上，网关负责校验。
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  return (await send<T>(path, init)).data;
+}
+
+// send 和 request 一样，另外带回响应头 Date 里的服务器时间（毫秒，读不到时用本机时间），用来算构建已经用了多久，不受本机时钟偏差影响。
+async function send<T>(path: string, init?: RequestInit): Promise<{ data: T; serverTime: number }> {
   // 上传文件时由浏览器自己设置 multipart 的 Content-Type。
   const json = !(init?.body instanceof FormData);
   const res = await fetch(path, {
@@ -89,14 +94,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const body = await res.json().catch(() => ({}));
     throw new ApiError(res.status, body.error ?? "请求失败", body.log, body.privileges);
   }
-  return res.status === 204 ? (undefined as T) : res.json();
+  const data = res.status === 204 ? (undefined as T) : await res.json();
+  const date = Date.parse(res.headers.get("Date") ?? "");
+  return { data, serverTime: Number.isNaN(date) ? Date.now() : date };
 }
 
 export const packageUrl = (id: number) => `/api/builder/builds/${id}/package`;
 
 export const api = {
   me: () => request<Me>("/api/builder/me"),
-  builds: () => request<Build[]>("/api/builder/builds"),
+  builds: () => send<Build[]>("/api/builder/builds"),
   build: (id: number) => request<BuildDetail>(`/api/builder/builds/${id}`),
   upload: (file: File) => {
     const form = new FormData();

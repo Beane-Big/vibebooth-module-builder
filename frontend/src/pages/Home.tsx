@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
 import {
   api,
   ApiError,
@@ -13,6 +13,7 @@ import {
   type Me,
   type Rules,
 } from "../api";
+import { ArchiveIcon, CloseIcon, SettingsIcon, UploadIcon } from "../icons";
 
 // 展开在某条记录下方的内容：构建日志或安装日志，同一时间只展开一个。
 type Expanded = { id: number; panel: "build" | "install" };
@@ -60,11 +61,29 @@ export default function Home() {
   // 正在查已装版本或安装的自动安装；查的时候 installing 还没设上，靠它避免同时开始装第二个。
   const autoBusy = useRef(false);
 
+  // 构建中的记录在本页第一次读到时的起点（performance.now() 的时刻），用时从这里往后按秒走，之后刷新列表不再改它；刷新本页时重新从后端算。
+  const starts = useRef(new Map<number, number>());
+
   function load() {
     api
       .builds()
-      .then(setBuilds)
+      .then(({ data, serverTime }) => {
+        const now = performance.now();
+        for (const b of data)
+          if (b.status === "building" && b.startedAt && !starts.current.has(b.id))
+            // 取整到秒：之后每秒的重画正好落在整秒后面一点，不会偶尔跳过一秒。
+            starts.current.set(b.id, now - Math.round(Math.max(0, serverTime - new Date(b.startedAt).getTime()) / 1000) * 1000);
+        setBuilds(data);
+      })
       .catch((err) => setError(err.message));
+  }
+
+  // elapsed 返回构建用了几秒：结束了的用后端记的开始和结束时间，构建中的从本页的起点算到现在。
+  function elapsed(b: Build) {
+    if (!b.startedAt) return null;
+    if (b.finishedAt) return (new Date(b.finishedAt).getTime() - new Date(b.startedAt).getTime()) / 1000;
+    const start = starts.current.get(b.id);
+    return start === undefined ? 0 : (performance.now() - start) / 1000;
   }
 
   useEffect(() => {
@@ -79,13 +98,22 @@ export default function Home() {
     load();
   }, []);
 
-  // 有排队或构建中的记录时每隔几秒刷新一次列表，构建中的用时也跟着更新。
+  // 有排队或构建中的记录时每隔几秒刷新一次列表，看状态有没有变。
   const running = builds.some(isRunning);
   useEffect(() => {
     if (!running) return;
     const timer = setInterval(load, 3000);
     return () => clearInterval(timer);
   }, [running]);
+
+  // 有构建中的记录时每秒重画一次，用时一秒一秒地走。
+  const [, setTick] = useState(0);
+  const building = builds.some((b) => b.status === "building");
+  useEffect(() => {
+    if (!building) return;
+    const timer = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, [building]);
 
   useEffect(() => {
     try {
@@ -109,6 +137,14 @@ export default function Home() {
     askInstall(b, true).finally(() => (autoBusy.current = false));
   }, [builds, auto, installing, pending, confirming]);
 
+  // 选了或拖进来一个文件；换了文件就要重新确认“构建并安装”。
+  function pick(f: File | null) {
+    setFile(f);
+    setFileKey((k) => k + 1);
+    setConfirmAuto(false);
+    setError("");
+  }
+
   // installAfter 为 true 是“构建并安装”：构建成功后自动安装，不用再点“安装”。
   async function upload(e: FormEvent, installAfter = false) {
     e.preventDefault();
@@ -119,8 +155,7 @@ export default function Home() {
     try {
       const b = await api.upload(file);
       if (installAfter) setAuto((ids) => [...ids, b.id]);
-      setFile(null);
-      setFileKey((k) => k + 1);
+      pick(null);
       setExpanded({ id: b.id, panel: "build" });
       load();
     } catch (err) {
@@ -206,64 +241,58 @@ export default function Home() {
   }
 
   return (
-    <>
-      <header className="topbar">
-        <span className="title">构建器</span>
-        {me?.menus.includes("settings") && (
-          <a className="nav" href="/apps/builder/settings/">
+    <main className="content stack">
+      {me?.menus.includes("settings") && (
+        <div className="page-head">
+          <a className="pill" href="/apps/builder/settings/">
+            <SettingsIcon />
             设置
           </a>
-        )}
-      </header>
-      <main className="content stack">
-        <form className="card stack" onSubmit={upload}>
-          <h1>上传源码包</h1>
-          <p className="muted">
-            上传模块仓库打成的 zip（不要带 node_modules、dist），服务器会按仓库里的 compose.yaml 和 Dockerfile
-            构建出软件包。模块的 id、名称和版本都以源码包里的 module.yaml 为准。
-          </p>
-          <div className="actions">
-            <input
-              key={fileKey}
-              type="file"
-              accept=".zip"
-              onChange={(e) => {
-                setFile(e.target.files?.[0] ?? null);
-                setConfirmAuto(false);
-              }}
-              disabled={uploading}
-            />
-            {confirmAuto ? (
-              <>
-                <button type="button" onClick={(e) => upload(e, true)} disabled={!file || uploading}>
-                  {uploading ? "上传中…" : "确认构建并安装"}
-                </button>
-                <button className="secondary" type="button" onClick={() => setConfirmAuto(false)} disabled={uploading}>
-                  取消
-                </button>
-              </>
-            ) : (
-              <>
-                <button type="submit" disabled={!file || uploading}>
-                  {uploading ? "上传中…" : "开始构建"}
-                </button>
-                {me?.admin && (
-                  <button className="secondary" type="button" onClick={() => setConfirmAuto(true)} disabled={!file || uploading}>
-                    构建并安装
-                  </button>
-                )}
-              </>
-            )}
-          </div>
-          {confirmAuto && file && (
-            <p className="hint">
-              构建 {file.name}，成功后直接装到本平台，不再询问。等待期间不要关闭本页；降级或模块需要特权时，仍会在记录下方请你确认。
-            </p>
+        </div>
+      )}
+      <form className="card stack" onSubmit={upload}>
+        <h1>上传源码包</h1>
+        <p className="muted">
+          服务器会按仓库里的 compose.yaml 和 Dockerfile 构建出软件包。模块的 id、名称和版本都以源码包里的 module.yaml 为准。
+        </p>
+        <FileDrop key={fileKey} file={file} disabled={uploading} onPick={pick} onError={setError} />
+        <div className="actions">
+          <button type="submit" disabled={!file || uploading || confirmAuto}>
+            {uploading ? "上传中…" : "开始构建"}
+          </button>
+          {me?.admin && (
+            <button
+              className={"secondary" + (confirmAuto ? " pressed" : "")}
+              type="button"
+              aria-expanded={confirmAuto}
+              onClick={() => setConfirmAuto(!confirmAuto)}
+              disabled={!file || uploading}
+            >
+              构建并安装
+            </button>
           )}
-          {error && <p className="error">{error}</p>}
-        </form>
+        </div>
+        {confirmAuto && file && (
+          <div className="confirm stack" role="group" aria-label="确认构建并安装">
+            <p className="confirm-title">确认构建并安装 {file.name}？</p>
+            <p className="muted">
+              构建成功后直接装到本平台，不再询问。等待期间不要关闭本页；降级或模块需要特权时，仍会在记录下方请你确认。
+            </p>
+            <div className="actions">
+              <button type="button" onClick={(e) => upload(e, true)} disabled={uploading}>
+                {uploading ? "上传中…" : "确认构建并安装"}
+              </button>
+              <button className="secondary" type="button" onClick={() => setConfirmAuto(false)} disabled={uploading}>
+                取消
+              </button>
+            </div>
+          </div>
+        )}
+        {error && <p className="error">{error}</p>}
+      </form>
 
-        <section className="card stack">
+      <section className="stack">
+        <div className="section-head">
           <h1>构建记录</h1>
           {rules && (
             <p className="muted">
@@ -271,117 +300,215 @@ export default function Home() {
               天的自动删除，软件包和日志一起删除。
             </p>
           )}
-          {builds.length === 0 && <p className="muted">还没有构建过。</p>}
-          <ul className="list">
-            {builds.map((b) => {
-              const open = expanded?.id === b.id ? expanded.panel : null;
-              const retention = rules && retentionText(b, builds, rules);
-              return (
-                <li key={b.id} className={"list-item" + (open ? " selected" : "")}>
-                  <div className="list-main">
+        </div>
+        {builds.length === 0 && <p className="card muted">还没有构建过。</p>}
+        <ul className="cards">
+          {builds.map((b) => {
+            const open = expanded?.id === b.id ? expanded.panel : null;
+            const retention = rules && retentionText(b, builds, rules);
+            const seconds = elapsed(b);
+            return (
+              <li key={b.id} className={"card build" + (open ? " selected" : "")}>
+                <div className="build-head">
+                  <div className="build-title">
                     <span className="item-name">
-                      {b.moduleName} {b.version}
-                      <span className={"tag tag-" + b.status}>{statusText[b.status]}</span>
-                      {auto.includes(b.id) && <span className="tag">构建后安装</span>}
-                      {b.installStatus && (
+                      {b.moduleName}
+                      <span className="version">{b.version}</span>
+                    </span>
+                    <span className={"tag tag-" + b.status}>{statusText[b.status]}</span>
+                    {auto.includes(b.id) && <span className="tag">构建后安装</span>}
+                    {installing === b.id ? (
+                      <span className="tag tag-installing">安装中</span>
+                    ) : (
+                      b.installStatus && (
                         <span className={"tag tag-" + b.installStatus}>
                           {b.installStatus === "success" ? "已安装" : "安装失败"}
                         </span>
-                      )}
-                    </span>
-                    <span className="muted">
-                      {b.moduleId} · {b.createdBy} · {formatTime(b.createdAt)}
-                      {b.startedAt && ` · 用时 ${formatDuration(b.startedAt, b.finishedAt)}`}
-                      {b.status === "success" && ` · ${formatSize(b.packageSize)}`}
-                    </span>
-                    {retention && <span className="muted">{retention}</span>}
-                  </div>
-                  <div className="actions">
-                    {removing === b.id ? (
-                      <>
-                        <button className="danger" onClick={() => remove(b)}>
-                          {isRunning(b) ? "确认取消构建" : "确认删除"}
-                        </button>
-                        <button className="secondary" onClick={() => setRemoving(null)}>
-                          {isRunning(b) ? "继续构建" : "不删除"}
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button className="secondary" onClick={() => toggle(b.id, "build")}>
-                          {open === "build" ? "收起日志" : "日志"}
-                        </button>
-                        {(b.installStatus || installing === b.id || confirming?.id === b.id || pending?.id === b.id) && (
-                          <button className="secondary" onClick={() => toggle(b.id, "install")}>
-                            {open === "install" ? "收起安装日志" : "安装日志"}
-                          </button>
-                        )}
-                        {b.status === "success" && (
-                          <a className="secondary button" href={packageUrl(b.id)} download>
-                            下载
-                          </a>
-                        )}
-                        {b.status === "success" && me?.admin && (
-                          <button className="secondary" onClick={() => askInstall(b)} disabled={installing !== null}>
-                            {installing === b.id ? "安装中…" : b.installStatus ? "重新安装" : "安装"}
-                          </button>
-                        )}
-                        <button className="link" onClick={() => setRemoving(b.id)} disabled={installing === b.id}>
-                          {isRunning(b) ? "取消" : "删除"}
-                        </button>
-                      </>
+                      )
                     )}
                   </div>
-                  {open === "build" && <BuildLog id={b.id} onFinish={load} />}
-                  {open === "install" && (
-                    <div className="detail stack">
-                      {installing === b.id && (
-                        <p className="muted">正在导入镜像并启动，可能需要一两分钟。关掉页面也不会中断安装。</p>
+                  {/* 每一项整体换行，“用时 3 分 10 秒”不会被拆到两行。 */}
+                  <span className="muted meta">
+                    {[
+                      b.moduleId,
+                      b.createdBy,
+                      formatTime(b.createdAt),
+                      seconds !== null && `用时 ${formatDuration(seconds)}`,
+                      b.status === "success" && formatSize(b.packageSize),
+                    ]
+                      .filter(Boolean)
+                      .map((text, i) => (
+                        <span key={i}>{text}</span>
+                      ))}
+                  </span>
+                  {retention && <span className="muted">{retention}</span>}
+                </div>
+                <div className="actions">
+                  {removing === b.id ? (
+                    <>
+                      <button className="danger" onClick={() => remove(b)}>
+                        {isRunning(b) ? "确认取消构建" : "确认删除"}
+                      </button>
+                      <button className="secondary" onClick={() => setRemoving(null)}>
+                        {isRunning(b) ? "继续构建" : "不删除"}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button className="secondary" onClick={() => toggle(b.id, "build")}>
+                        {open === "build" ? "收起日志" : "日志"}
+                      </button>
+                      {(b.installStatus || installing === b.id || confirming?.id === b.id || pending?.id === b.id) && (
+                        <button className="secondary" onClick={() => toggle(b.id, "install")}>
+                          {open === "install" ? "收起安装日志" : "安装日志"}
+                        </button>
                       )}
-                      {pending?.id === b.id && (
-                        <InstallConfirm
-                          build={b}
-                          current={pending.current}
-                          busy={b.moduleId === SELF_ID && running}
-                          onConfirm={() => install(b)}
-                          onCancel={() => setPending(null)}
-                        />
+                      {b.status === "success" && (
+                        <a className="secondary button" href={packageUrl(b.id)} download>
+                          下载
+                        </a>
                       )}
-                      {confirming?.id === b.id && (
-                        <div className="stack">
-                          <p className="error">这个应用需要以下特权，确认后才会安装：</p>
-                          <ul>
-                            {confirming.privileges.map((p) => (
-                              <li key={p}>
-                                <code>{p}</code>：{privilegeInfo[p] ?? "平台不认识的特权"}
-                              </li>
-                            ))}
-                          </ul>
-                          <div className="actions">
-                            <button className="danger" onClick={() => install(b, true)}>
-                              确认并安装
-                            </button>
-                            <button className="secondary" onClick={() => setConfirming(null)}>
-                              取消
-                            </button>
-                          </div>
-                        </div>
+                      {b.status === "success" && me?.admin && (
+                        <button className="secondary" onClick={() => askInstall(b)} disabled={installing !== null}>
+                          {b.installStatus ? "重新安装" : "安装"}
+                        </button>
                       )}
-                      {notice?.id === b.id && <p className={notice.ok ? "success" : "error"}>{notice.message}</p>}
-                      {notice?.id === b.id && notice.log !== undefined ? (
-                        <pre className="log">{notice.log || "安装器没有返回日志"}</pre>
-                      ) : (
-                        b.installStatus && <InstallLog key={b.installedAt} build={b} />
-                      )}
-                    </div>
+                      <button className="link" onClick={() => setRemoving(b.id)} disabled={installing === b.id}>
+                        {isRunning(b) ? "取消" : "删除"}
+                      </button>
+                    </>
                   )}
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      </main>
-    </>
+                </div>
+                {open === "build" && <BuildLog id={b.id} onFinish={load} />}
+                {open === "install" && (
+                  <div className="detail stack">
+                    {installing === b.id && (
+                      <p className="muted">正在导入镜像并启动，可能需要一两分钟。关掉页面也不会中断安装。</p>
+                    )}
+                    {pending?.id === b.id && (
+                      <InstallConfirm
+                        build={b}
+                        current={pending.current}
+                        busy={b.moduleId === SELF_ID && running}
+                        onConfirm={() => install(b)}
+                        onCancel={() => setPending(null)}
+                      />
+                    )}
+                    {confirming?.id === b.id && (
+                      <div className="stack">
+                        <p className="error">这个应用需要以下特权，确认后才会安装：</p>
+                        <ul>
+                          {confirming.privileges.map((p) => (
+                            <li key={p}>
+                              <code>{p}</code>：{privilegeInfo[p] ?? "平台不认识的特权"}
+                            </li>
+                          ))}
+                        </ul>
+                        <div className="actions">
+                          <button className="danger" onClick={() => install(b, true)}>
+                            确认并安装
+                          </button>
+                          <button className="secondary" onClick={() => setConfirming(null)}>
+                            取消
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {notice?.id === b.id && <p className={notice.ok ? "success" : "error"}>{notice.message}</p>}
+                    {notice?.id === b.id && notice.log !== undefined ? (
+                      <pre className="log">{notice.log || "安装器没有返回日志"}</pre>
+                    ) : (
+                      b.installStatus && <InstallLog key={b.installedAt} build={b} />
+                    )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+    </main>
+  );
+}
+
+// FileDrop 是选源码包的区域：点一下打开选文件，也可以把 zip 拖进来；选好后显示文件名和大小，可以清掉重选。
+function FileDrop({
+  file,
+  disabled,
+  onPick,
+  onError,
+}: {
+  file: File | null;
+  disabled: boolean;
+  onPick: (f: File | null) => void;
+  onError: (message: string) => void;
+}) {
+  const [over, setOver] = useState(false);
+
+  function choose(f: File | undefined) {
+    if (!f) return;
+    if (!f.name.toLowerCase().endsWith(".zip")) return onError("只能上传 .zip 格式的源码包");
+    onPick(f);
+  }
+
+  function drop(e: DragEvent) {
+    e.preventDefault();
+    setOver(false);
+    if (!disabled) choose(e.dataTransfer.files[0]);
+  }
+
+  return (
+    <label
+      className={"drop" + (over ? " over" : "") + (file ? " picked" : "") + (disabled ? " disabled" : "")}
+      onDragOver={(e) => {
+        e.preventDefault();
+        if (!disabled) setOver(true);
+      }}
+      onDragLeave={() => setOver(false)}
+      onDrop={drop}
+    >
+      <input
+        className="sr-only"
+        type="file"
+        accept=".zip"
+        disabled={disabled}
+        onChange={(e) => choose(e.target.files?.[0])}
+      />
+      {file ? (
+        <>
+          <span className="drop-icon">
+            <ArchiveIcon />
+          </span>
+          <span className="drop-text">
+            <span className="drop-name">{file.name}</span>
+            <span className="muted">{formatSize(file.size)} · 点击更换</span>
+          </span>
+          <button
+            type="button"
+            className="icon"
+            aria-label="清除已选的文件"
+            disabled={disabled}
+            onClick={(e) => {
+              // 按钮在 label 里，不拦住的话会顺带打开选文件。
+              e.preventDefault();
+              onPick(null);
+            }}
+          >
+            <CloseIcon />
+          </button>
+        </>
+      ) : (
+        <>
+          <span className="drop-icon">
+            <UploadIcon />
+          </span>
+          <span className="drop-text">
+            <span className="drop-name">点击选择，或把 zip 拖到这里</span>
+            <span className="muted">模块仓库打成的 zip，不要带 node_modules、dist</span>
+          </span>
+        </>
+      )}
+    </label>
   );
 }
 
@@ -522,9 +649,9 @@ function formatTime(s: string) {
   return new Date(s).toLocaleString("zh-CN", { hour12: false });
 }
 
-// formatDuration 算构建用时；还没结束的算到现在。
-function formatDuration(start: string, end: string | null) {
-  const seconds = Math.max(0, Math.round(((end ? new Date(end) : new Date()).getTime() - new Date(start).getTime()) / 1000));
+// formatDuration 把构建用的秒数写成“几分几秒”。
+function formatDuration(value: number) {
+  const seconds = Math.max(0, Math.floor(value));
   if (seconds < 60) return `${seconds} 秒`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes} 分 ${seconds % 60} 秒`;
