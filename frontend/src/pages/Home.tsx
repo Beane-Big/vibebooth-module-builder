@@ -42,9 +42,13 @@ export default function Home() {
   const [builds, setBuilds] = useState<Build[]>([]);
   const [expanded, setExpanded] = useState<Expanded | null>(null);
   const [error, setError] = useState("");
-  const [file, setFile] = useState<File | null>(null);
-  const [fileKey, setFileKey] = useState(0);
-  const [uploading, setUploading] = useState(false);
+  // 选好的源码包，可以一次选多个；上传时一个一个传，每个成功后各自排进构建队列。
+  const [files, setFiles] = useState<File[]>([]);
+  // 上传没通过的源码包和原因，留在列表里给管理员看，改好后可以重新上传。
+  const [fileErrors, setFileErrors] = useState(new Map<File, string>());
+  // 正在上传第几个（从 0 开始），没在上传是 null。
+  const [uploading, setUploading] = useState<number | null>(null);
+  const busy = uploading !== null;
   // 点了“构建并安装”、等确认；换了文件就要重新确认。
   const [confirmAuto, setConfirmAuto] = useState(false);
   // 点了“删除”或“取消”、等确认的记录。
@@ -123,10 +127,13 @@ export default function Home() {
     }
   }, [auto]);
 
-  // 等着自动安装的记录构建结束后，一次装一个；正在安装或等管理员确认时先不动，结束后再看下一个。
+  // 等着自动安装的记录构建结束后，按上传顺序一次装一个；正在安装或等管理员确认时先不动，结束后再看下一个。
+  // 构建器自己放到最后装：装它会换掉正在用的构建器，先装的话会打断后面的构建，还会停在确认上、挡住后面的安装。
   useEffect(() => {
     if (autoBusy.current || installing !== null || pending || confirming) return;
-    const b = builds.find((b) => auto.includes(b.id) && !isRunning(b));
+    const waiting = builds.filter((b) => auto.includes(b.id));
+    const done = waiting.filter((b) => !isRunning(b)).sort((x, y) => x.id - y.id);
+    const b = done.find((b) => b.moduleId !== SELF_ID) ?? (done.length === waiting.length ? done[0] : undefined);
     if (!b) return;
     setAuto((ids) => ids.filter((id) => id !== b.id));
     if (b.status !== "success") {
@@ -137,32 +144,53 @@ export default function Home() {
     askInstall(b, true).finally(() => (autoBusy.current = false));
   }, [builds, auto, installing, pending, confirming]);
 
-  // 选了或拖进来一个文件；换了文件就要重新确认“构建并安装”。
-  function pick(f: File | null) {
-    setFile(f);
-    setFileKey((k) => k + 1);
+  // 选了或拖进来几个文件，加在已选的后面，同一个文件不重复加；文件变了就要重新确认“构建并安装”。
+  function add(picked: File[]) {
+    const same = (a: File, b: File) => a.name === b.name && a.size === b.size && a.lastModified === b.lastModified;
+    const fresh = picked.filter((f, i) => picked.findIndex((o) => same(o, f)) === i);
+    setFiles((fs) => [...fs, ...fresh.filter((f) => !fs.some((o) => same(o, f)))]);
     setConfirmAuto(false);
     setError("");
   }
 
+  function removeFile(f: File) {
+    setFiles((fs) => fs.filter((o) => o !== f));
+    setFileErrors((m) => {
+      const next = new Map(m);
+      next.delete(f);
+      return next;
+    });
+    setConfirmAuto(false);
+    setError("");
+  }
+
+  // 一个一个上传，每个通过检查的马上排进构建队列；没通过的留在列表里、写上原因，其他的照常上传。
   // installAfter 为 true 是“构建并安装”：构建成功后自动安装，不用再点“安装”。
   async function upload(e: FormEvent, installAfter = false) {
     e.preventDefault();
-    if (!file) return;
-    setUploading(true);
+    if (!files.length) return;
     setConfirmAuto(false);
     setError("");
-    try {
-      const b = await api.upload(file);
-      if (installAfter) setAuto((ids) => [...ids, b.id]);
-      pick(null);
-      setExpanded({ id: b.id, panel: "build" });
-      load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "上传失败");
-    } finally {
-      setUploading(false);
+    setFileErrors(new Map());
+    const failed = new Map<File, string>();
+    let first: number | null = null;
+    for (const [i, f] of files.entries()) {
+      setUploading(i);
+      try {
+        const b = await api.upload(f);
+        if (installAfter) setAuto((ids) => [...ids, b.id]);
+        first ??= b.id;
+        load();
+      } catch (err) {
+        failed.set(f, err instanceof Error ? err.message : "上传失败");
+      }
     }
+    setUploading(null);
+    setFiles((fs) => fs.filter((f) => failed.has(f)));
+    setFileErrors(failed);
+    if (failed.size) setError(`${failed.size} 个源码包没能上传，原因写在文件下面；改好后可以重新上传。`);
+    // 展开第一条新记录的日志，看得到构建开始了。
+    if (first !== null) setExpanded({ id: first, panel: "build" });
   }
 
   async function remove(b: Build) {
@@ -255,10 +283,17 @@ export default function Home() {
         <p className="muted">
           服务器会按仓库里的 compose.yaml 和 Dockerfile 构建出软件包。模块的 id、名称和版本都以源码包里的 module.yaml 为准。
         </p>
-        <FileDrop key={fileKey} file={file} disabled={uploading} onPick={pick} onError={setError} />
+        <FileDrop
+          files={files}
+          errors={fileErrors}
+          uploading={uploading}
+          onAdd={add}
+          onRemove={removeFile}
+          onError={setError}
+        />
         <div className="actions">
-          <button type="submit" disabled={!file || uploading || confirmAuto}>
-            {uploading ? "上传中…" : "开始构建"}
+          <button type="submit" disabled={!files.length || busy || confirmAuto}>
+            {busy ? uploadingText(uploading, files.length) : "开始构建"}
           </button>
           {me?.admin && (
             <button
@@ -266,23 +301,26 @@ export default function Home() {
               type="button"
               aria-expanded={confirmAuto}
               onClick={() => setConfirmAuto(!confirmAuto)}
-              disabled={!file || uploading}
+              disabled={!files.length || busy}
             >
               构建并安装
             </button>
           )}
         </div>
-        {confirmAuto && file && (
+        {confirmAuto && files.length > 0 && (
           <div className="confirm stack" role="group" aria-label="确认构建并安装">
-            <p className="confirm-title">确认构建并安装 {file.name}？</p>
+            <p className="confirm-title">
+              {files.length === 1 ? `确认构建并安装 ${files[0].name}？` : `确认构建并安装这 ${files.length} 个源码包？`}
+            </p>
             <p className="muted">
+              {files.length > 1 && "按上传顺序排队构建，成功一个装一个；其中有构建器自己的话放到最后装。"}
               构建成功后直接装到本平台，不再询问。等待期间不要关闭本页；降级或模块需要特权时，仍会在记录下方请你确认。
             </p>
             <div className="actions">
-              <button type="button" onClick={(e) => upload(e, true)} disabled={uploading}>
-                {uploading ? "上传中…" : "确认构建并安装"}
+              <button type="button" onClick={(e) => upload(e, true)} disabled={busy}>
+                {busy ? uploadingText(uploading, files.length) : "确认构建并安装"}
               </button>
-              <button className="secondary" type="button" onClick={() => setConfirmAuto(false)} disabled={uploading}>
+              <button className="secondary" type="button" onClick={() => setConfirmAuto(false)} disabled={busy}>
                 取消
               </button>
             </div>
@@ -431,85 +469,116 @@ export default function Home() {
   );
 }
 
-// FileDrop 是选源码包的区域：点一下打开选文件，也可以把 zip 拖进来；选好后显示文件名和大小，可以清掉重选。
+// FileDrop 是选源码包的区域：点一下打开选文件，也可以把 zip 拖进来，一次可以选多个。
+// 选好的列在上面，每个显示文件名和大小，可以单独去掉；下面的框还能继续添加。
 function FileDrop({
-  file,
-  disabled,
-  onPick,
+  files,
+  errors,
+  uploading,
+  onAdd,
+  onRemove,
   onError,
 }: {
-  file: File | null;
-  disabled: boolean;
-  onPick: (f: File | null) => void;
+  files: File[];
+  errors: Map<File, string>;
+  uploading: number | null;
+  onAdd: (files: File[]) => void;
+  onRemove: (f: File) => void;
   onError: (message: string) => void;
 }) {
   const [over, setOver] = useState(false);
+  const disabled = uploading !== null;
 
-  function choose(f: File | undefined) {
-    if (!f) return;
-    if (!f.name.toLowerCase().endsWith(".zip")) return onError("只能上传 .zip 格式的源码包");
-    onPick(f);
+  function choose(list: FileList | null | undefined) {
+    const picked = Array.from(list ?? []);
+    const zips = picked.filter((f) => f.name.toLowerCase().endsWith(".zip"));
+    if (zips.length) onAdd(zips);
+    const skipped = picked.filter((f) => !zips.includes(f)).map((f) => f.name);
+    if (skipped.length) onError(`只能上传 .zip 格式的源码包，没有加入：${skipped.join("、")}`);
   }
 
   function drop(e: DragEvent) {
     e.preventDefault();
     setOver(false);
-    if (!disabled) choose(e.dataTransfer.files[0]);
+    if (!disabled) choose(e.dataTransfer.files);
   }
 
   return (
-    <label
-      className={"drop" + (over ? " over" : "") + (file ? " picked" : "") + (disabled ? " disabled" : "")}
-      onDragOver={(e) => {
-        e.preventDefault();
-        if (!disabled) setOver(true);
-      }}
-      onDragLeave={() => setOver(false)}
-      onDrop={drop}
-    >
-      <input
-        className="sr-only"
-        type="file"
-        accept=".zip"
-        disabled={disabled}
-        onChange={(e) => choose(e.target.files?.[0])}
-      />
-      {file ? (
-        <>
-          <span className="drop-icon">
-            <ArchiveIcon />
-          </span>
-          <span className="drop-text">
-            <span className="drop-name">{file.name}</span>
-            <span className="muted">{formatSize(file.size)} · 点击更换</span>
-          </span>
-          <button
-            type="button"
-            className="icon"
-            aria-label="清除已选的文件"
-            disabled={disabled}
-            onClick={(e) => {
-              // 按钮在 label 里，不拦住的话会顺带打开选文件。
-              e.preventDefault();
-              onPick(null);
-            }}
-          >
-            <CloseIcon />
-          </button>
-        </>
-      ) : (
-        <>
-          <span className="drop-icon">
-            <UploadIcon />
-          </span>
-          <span className="drop-text">
-            <span className="drop-name">点击选择，或把 zip 拖到这里</span>
-            <span className="muted">模块仓库打成的 zip，不要带 node_modules、dist</span>
-          </span>
-        </>
+    <div className="stack files">
+      {files.length > 0 && (
+        <ul className="file-list">
+          {files.map((f, i) => (
+            <li key={`${f.name}-${f.size}-${f.lastModified}`} className="drop picked">
+              <span className="drop-icon">
+                <ArchiveIcon />
+              </span>
+              <span className="drop-text">
+                <span className="drop-name">{f.name}</span>
+                <span className="muted">
+                  {formatSize(f.size)}
+                  {uploading === i && " · 上传中…"}
+                  {uploading !== null && i > uploading && " · 等待上传"}
+                </span>
+                {errors.has(f) && <span className="error">{errors.get(f)}</span>}
+              </span>
+              <button
+                type="button"
+                className="icon"
+                aria-label={`去掉 ${f.name}`}
+                disabled={disabled}
+                onClick={() => onRemove(f)}
+              >
+                <CloseIcon />
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
-    </label>
+      <label
+        className={"drop" + (over ? " over" : "") + (files.length ? " more" : "") + (disabled ? " disabled" : "")}
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (!disabled) setOver(true);
+        }}
+        onDragLeave={() => setOver(false)}
+        onDrop={drop}
+      >
+        <input
+          className="sr-only"
+          type="file"
+          accept=".zip"
+          multiple
+          disabled={disabled}
+          onChange={(e) => {
+            choose(e.target.files);
+            // 清掉输入框，去掉一个文件后还能再选回来。
+            e.target.value = "";
+          }}
+        />
+        <span className="drop-icon">
+          <UploadIcon />
+        </span>
+        <span className="drop-text">
+          {files.length ? (
+            <>
+              <span className="drop-name">继续添加源码包</span>
+              <span className="muted">点击选择，或把 zip 拖到这里</span>
+            </>
+          ) : (
+            <>
+              <span className="drop-name">点击选择，或把 zip 拖到这里</span>
+              <span className="muted">可以一次选多个；模块仓库打成的 zip，不要带 node_modules、dist</span>
+            </>
+          )}
+        </span>
+      </label>
+    </div>
   );
+}
+
+// uploadingText 是上传时按钮上的字，传多个时带上进度。
+function uploadingText(index: number | null, total: number) {
+  return total > 1 && index !== null ? `上传中 ${index + 1}/${total}…` : "上传中…";
 }
 
 // InstallConfirm 在安装前说明会发生什么：新装、重装、升级还是降级，装构建器自己时还要提醒会打断构建。

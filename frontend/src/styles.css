@@ -170,6 +170,12 @@ input {
 }
 .drop-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .drop-name { font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 选好的源码包一个一行，样式和选中单个文件时一样；下面继续添加的框矮一些。 */
+.files { gap: 10px; }
+.file-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.file-list .drop { cursor: default; padding: 12px 16px; }
+.file-list .drop:hover { border-color: var(--border); }
+.drop.more { padding: 12px 16px; }
 
 /* “构建并安装”的确认框：在按钮下面弹出一块主题色的框，和原来的按钮分开，一眼能看出点了以后有变化。 */
 .confirm {
