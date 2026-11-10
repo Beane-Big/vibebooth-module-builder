@@ -47,6 +47,7 @@ export const isRunning = (b: Build) => b.status === "queued" || b.status === "bu
 // 平台安装器认识的特权和给管理员看的说明，和门户“应用管理”页一致。
 export const privilegeInfo: Record<string, string> = {
   "docker-build": "在服务器上构建镜像。它碰不到平台自己的程序，但能替换其他应用的镜像，只安装你信任的模块。",
+  "public-share": "应用里 /s/ 开头的分享页不需要登录，拿到链接的人都能打开。链接的有效期和提取码由应用自己负责，其他页面照常要登录。",
 };
 
 // 平台上已经装好的模块，安装前用来告诉管理员是新装、重装、升级还是降级。
