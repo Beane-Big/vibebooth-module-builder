@@ -4,6 +4,8 @@
 
 这是一个 [Vibebooth](https://github.com/Beane-Big/vibebooth) 模块，由 `create-vibebooth` 生成。
 
+0.5.2 支持模块清单中的 `opt_in` 功能权限。构建器可通过现有构建器上传本仓库源码升级。安装使用该权限的模块前，平台和安装器也需要包含平台 PR #54 的更新。
+
 ## 怎么工作
 
 1. 在页面上传模块仓库打成的源码包（zip，不带 `node_modules`、`dist`；GitHub 上的 “Download ZIP” 也可以）。上传时就按平台安装的规则检查 `module.yaml` 和 `compose.yaml`，不合规范直接拒绝。
