@@ -4,6 +4,55 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>构建器</title>
+    <script>
+      (function () {
+        var KEY = "vb:reload", last = 0;
+        function reloadOnce() {
+          try {
+            var now = Date.now(), prev = Number(sessionStorage.getItem(KEY) || 0);
+            if (now - prev < 15000) return;
+            sessionStorage.setItem(KEY, String(now));
+          } catch (e) {}
+          location.reload();
+        }
+        function curEntry() {
+          var s = document.querySelector('script[type="module"][src*="/assets/"]');
+          return s ? s.getAttribute("src") : "";
+        }
+        function check(force) {
+          var cur = curEntry();
+          if (!cur) return;
+          var now = Date.now();
+          if (!force && now - last < 30000) return;
+          last = now;
+          fetch(location.href, { cache: "no-store" })
+            .then(function (r) {
+              if (r.status === 401) { reloadOnce(); return ""; }
+              var ct = r.headers.get("content-type") || "";
+              return r.ok && ct.indexOf("text/html") !== -1 ? r.text() : "";
+            })
+            .then(function (html) {
+              if (!html) return;
+              var m = html.match(/<script\b[^>]*\btype="module"[^>]*\bsrc="([^"]*\/assets\/[^"]+\.js)"/);
+              if (m && m[1] !== cur) reloadOnce();
+            })
+            .catch(function () {});
+        }
+        window.addEventListener("error", function (e) {
+          var t = e.target;
+          if (!t || t === window) return;
+          var u = t.src || t.href || "";
+          if (u.indexOf("/assets/") !== -1) reloadOnce();
+        }, true);
+        window.addEventListener("vite:preloadError", reloadOnce);
+        document.addEventListener("visibilitychange", function () {
+          if (document.visibilityState === "visible") check(false);
+        });
+        window.addEventListener("pageshow", function (e) {
+          if (e.persisted) check(true);
+        });
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
